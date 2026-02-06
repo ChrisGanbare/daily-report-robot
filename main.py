@@ -25,8 +25,15 @@ API_URL = "https://youku.zr228.com/oil-admin/api/v1/device/oil/queryDeviceOilSto
 # 3. 机器人 Webhook (企业微信/钉钉)
 WEBHOOK_URL = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=928f052d-7b3a-4137-bb54-8f1528da84e0"
 
-# 4. 其他配置
-CONFIG_FILE = 'device_config.json'
+# 4. 配置文件设置
+# 方案A：在线表格配置 (填入腾讯文档/飞书表格的导出/下载链接)
+# 示例：CONFIG_EXCEL_URL = "https://docs.qq.com/d/export/YOUR_DOC_ID?format=xlsx"
+CONFIG_EXCEL_URL = "https://www.kdocs.cn/l/cvpSEwIAZGtE"
+
+# 方案B：本地文件配置 (当在线表格未配置或下载失败时使用)
+CONFIG_LOCAL_FILE = 'device_config.xlsx'
+
+# 5. 其他配置
 EXCEL_PASSWORD = "AdminPassword2026"
 
 
@@ -36,19 +43,13 @@ def get_db_data():
     """从数据库获取基础设备和库存信息 (使用 SQLAlchemy)"""
     print("正在从数据库读取数据...")
 
-    # 1. 安全处理密码中的特殊字符
-    # 确保 DB_CONFIG 在此处是可见的（全局变量）
     safe_password = urllib.parse.quote_plus(DB_CONFIG['password'])
-
-    # 2. 构建连接字符串
-    # 格式: mysql+pymysql://user:password@host:port/db?charset=utf8mb4
     db_url = (
         f"mysql+pymysql://{DB_CONFIG['user']}:{safe_password}"
         f"@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['db']}?charset={DB_CONFIG['charset']}"
     )
 
     try:
-        # 3. 创建引擎并连接
         engine = create_engine(db_url)
 
         sql = """
@@ -70,9 +71,6 @@ def get_db_data():
         WHERE
             d.del_status = 1
         """
-        # 注意：SQL中去掉了 ORDER BY，我们将由 Pandas 统一负责排序
-
-        # 使用 Pandas 读取
         df = pd.read_sql(sql, engine)
         return df
 
@@ -82,7 +80,7 @@ def get_db_data():
 
 
 def get_api_data_map():
-    """调用API获取同步时间"""
+    """调用API获取设备同步时间"""
     print("正在调用API获取同步状态...")
     try:
         resp = requests.get(API_URL, timeout=15)
@@ -104,36 +102,84 @@ def get_api_data_map():
     return {}
 
 
+def load_config():
+    """加载配置：优先在线表格，失败则读取本地Excel"""
+    exclude_list = ["中润", "内部测试"]
+    device_config = {}
+    
+    df_devices = pd.DataFrame()
+    df_settings = pd.DataFrame()
+    
+    loaded_source = None
+
+    # 1. 尝试从在线表格读取
+    if CONFIG_EXCEL_URL and "http" in CONFIG_EXCEL_URL:
+        try:
+            print(f"正在尝试从在线表格加载配置...")
+            # 读取所有 sheet
+            xls = pd.read_excel(CONFIG_EXCEL_URL, sheet_name=None)
+            df_devices = xls.get('设备配置', pd.DataFrame())
+            df_settings = xls.get('全局设置', pd.DataFrame())
+            loaded_source = "在线表格"
+            print("在线配置加载成功")
+        except Exception as e:
+            print(f"在线表格加载失败: {e}")
+            
+    # 2. 如果在线加载失败（df为空），尝试读取本地文件
+    if loaded_source is None and os.path.exists(CONFIG_LOCAL_FILE):
+        try:
+            print(f"正在读取本地配置文件: {CONFIG_LOCAL_FILE}")
+            xls = pd.read_excel(CONFIG_LOCAL_FILE, sheet_name=None)
+            df_devices = xls.get('设备配置', pd.DataFrame())
+            df_settings = xls.get('全局设置', pd.DataFrame())
+            loaded_source = "本地文件"
+        except Exception as e:
+            print(f"本地配置文件读取失败: {e}")
+
+    # 3. 解析数据
+    if not df_devices.empty:
+        # 假设列名：设备编号, 桶数, 设备归属
+        # 兼容列名可能的空格
+        df_devices.columns = df_devices.columns.str.strip()
+        
+        for _, row in df_devices.iterrows():
+            code = str(row.get('设备编号', '')).strip()
+            if code and code != 'nan':
+                device_config[code] = {
+                    'barrels': row.get('桶数', 1),
+                    'owner': row.get('设备归属', '中润')
+                }
+    
+    if not df_settings.empty:
+        df_settings.columns = df_settings.columns.str.strip()
+        if '排除客户' in df_settings.columns:
+            excludes = df_settings['排除客户'].dropna().astype(str).tolist()
+            if excludes:
+                exclude_list = excludes
+
+    if loaded_source:
+        print(f"配置加载完成 (来源: {loaded_source})")
+    else:
+        print("未加载到有效配置，将使用默认设置")
+
+    return exclude_list, device_config
+
+
 def process_data(df, api_map):
     """核心逻辑处理"""
     if df.empty:
         return df
 
-    # 1. 加载配置文件
-    exclude_list = ["中润", "内部测试"]
-    device_config = {}
-    if os.path.exists(CONFIG_FILE):
-        try:
-            with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
-                cfg = json.load(f)
-                exclude_list = cfg.get('global_settings', {}).get('exclude_customers', exclude_list)
-                device_config = cfg.get('devices', {})
-        except Exception as e:
-            print(f"配置文件加载出错: {e}")
+    # 1. 加载配置 (修改为调用 load_config)
+    exclude_list, device_config = load_config()
 
     # 2. 排除客户
     if 'customer_name' in df.columns:
         df = df[~df['customer_name'].isin(exclude_list)].copy()
 
     # 3. === 排序逻辑 ===
-    # 将时间字符串转换为 datetime 对象
     df['install_time'] = pd.to_datetime(df['install_time'])
-
-    # 升序排列：旧的时间在前，新的时间在后 (ascending=True)
-    # 这样最新安装日期的设备就会排在最后（倒数第一）
     df = df.sort_values(by='install_time', ascending=True)
-
-    # 排序完成后，再格式化为字符串，防止字符串比较导致排序错误
     df['install_time'] = df['install_time'].dt.strftime('%Y.%m.%d').fillna('')
 
     # 4. 补全配置字段
@@ -164,8 +210,7 @@ def process_data(df, api_map):
     df['avai_oil'] = df['avai_oil'].fillna('无数据')
     df['oil_model'] = df['oil_model'].fillna('未设置')
 
-    # 7. === 关键步骤：生成序号 ===
-    # 必须在排序之后进行 reset_index，确保序号是连续的 1, 2, 3...
+    # 7. 生成序号
     df.reset_index(drop=True, inplace=True)
     df.insert(0, '序号', range(1, 1 + len(df)))
 
@@ -209,12 +254,10 @@ def generate_excel_with_format(df, filename):
     worksheet.set_column('H:H', 15)
     worksheet.set_column('J:J', 20)
 
-    # === 新增功能：冻结首行 ===
-    # 参数: (row, col) -> 冻结第一行，不冻结列
+    # === 冻结首行 ===
     worksheet.freeze_panes(1, 0)
 
-    # === 新增功能：添加自动筛选 ===
-    # 参数: (first_row, first_col, last_row, last_col)
+    # === 自动筛选 ===
     worksheet.autofilter(0, 0, len(df), len(df.columns) - 1)
 
     # 3. 条件格式 (库存列)
@@ -224,7 +267,7 @@ def generate_excel_with_format(df, filename):
         inv_col_idx = 4
 
     start_row = 1
-    end_row = len(df) + 1  # 确保覆盖所有行
+    end_row = len(df) + 1
 
     # 规则应用
     worksheet.conditional_format(start_row, inv_col_idx, end_row, inv_col_idx,
@@ -237,16 +280,15 @@ def generate_excel_with_format(df, filename):
     worksheet.conditional_format(start_row, inv_col_idx, end_row, inv_col_idx,
                                  {'type': 'cell', 'criteria': '<=', 'value': 5, 'format': red_fmt})
 
-    # === 新增功能：优化保护选项 ===
-    # 允许筛选 (autofilter=True) 和 选中复制 (select_locked_cells=True)
+    # === 保护选项 ===
     worksheet.protect(EXCEL_PASSWORD, options={
         'format_cells': False,
         'format_columns': False,
         'insert_rows': False,
         'delete_rows': False,
-        'sort': True,  # 允许排序 (在保护模式下受限，但建议开启)
-        'autofilter': True,  # 允许使用筛选下拉框
-        'select_locked_cells': True,  # 允许选中 (关键：开启后才能复制)
+        'sort': True,
+        'autofilter': True,
+        'select_locked_cells': True,
         'select_unlocked_cells': True
     })
 
@@ -280,9 +322,28 @@ def send_to_robot(filename):
         print(f"发送异常: {e}")
 
 
+def clean_old_files():
+    """清理旧的Excel报表文件"""
+    print("正在清理旧报表文件...")
+    try:
+        files = os.listdir('.')
+        for f in files:
+            if f.endswith('.xlsx') and "智能油库油量统计表" in f:
+                try:
+                    os.remove(f)
+                    print(f"已删除旧文件: {f}")
+                except Exception as e:
+                    print(f"删除文件 {f} 失败: {e}")
+    except Exception as e:
+        print(f"清理文件过程出错: {e}")
+
+
 def daily_task():
     """主任务"""
     print(f"[{datetime.datetime.now()}] 开始执行...")
+    
+    clean_old_files()
+
     df_db = get_db_data()
     api_map = get_api_data_map()
 
@@ -303,8 +364,8 @@ def daily_task():
 if __name__ == "__main__":
     print("=== 机器人运行中 ===")
 
-    # 测试运行一次（如果不想要测试，请注释下面这行）
-    daily_task()
+    # 测试运行一次
+    #daily_task()
 
     schedule.every().day.at("08:00").do(daily_task)
 
