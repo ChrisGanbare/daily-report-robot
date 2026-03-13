@@ -7,34 +7,57 @@ import time
 import schedule
 import os
 import urllib.parse
+import re
 from sqlalchemy import create_engine
 
 logger = logging.getLogger('daily_report')
 
-# ================= 配置区域 (请修改此处) =================
+# ================= 配置区域 =================
+# 敏感凭据优先从环境变量读取，未设置时使用下方默认值。
+# 生产环境建议通过系统环境变量或 .env 文件注入，避免凭据留存于代码中。
+# 设置示例（Windows）：
+#   set DB_PASSWORD=your_password
+#   set WEBHOOK_KEY=your_key
+
 # 1. 数据库配置
 DB_CONFIG = {
-    'host': '8.139.83.130',  # 数据库IP
-    'port': 3306,  # 端口
-    'user': 'query_zr',  # 用户名
-    'password': 'ZRYLPass220609!',  # 密码
-    'db': 'oil',  # 数据库名
+    'host':    os.environ.get('DB_HOST',     '8.139.83.130'),
+    'port':    int(os.environ.get('DB_PORT', '3306')),
+    'user':    os.environ.get('DB_USER',     'query_zr'),
+    'password': os.environ.get('DB_PASSWORD', 'ZRYLPass220609!'),
+    'db':      os.environ.get('DB_NAME',     'oil'),
     'charset': 'utf8mb4'
 }
 
-# 2. 机器人 Webhook (企业微信/钉钉)
-WEBHOOK_URL = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=928f052d-7b3a-4137-bb54-8f1528da84e0"
+# 2. 机器人 Webhook (企业微信)
+# 完整 URL 也可通过 WEBHOOK_URL 环境变量整体覆盖
+_webhook_key = os.environ.get('WEBHOOK_KEY', '928f052d-7b3a-4137-bb54-8f1528da84e0')
+WEBHOOK_URL = os.environ.get(
+    'WEBHOOK_URL',
+    f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={_webhook_key}"
+)
 
 # 4. 配置文件设置
-# 方案A：在线表格配置 (填入腾讯文档/飞书表格的导出/下载链接)
-# 示例：CONFIG_EXCEL_URL = "https://docs.qq.com/d/export/YOUR_DOC_ID?format=xlsx"
-CONFIG_EXCEL_URL = "https://www.kdocs.cn/l/cr1MGcDTjfCv"
+# 方案A：在线表格配置 (填入分享链接)
+#   - 腾讯文档：直接填分享链接，程序自动转换为导出链接
+#   - 飞书文档：填分享链接 + 配置下方 FEISHU_APP_ID / FEISHU_APP_SECRET
+#   - 金山文档/WPS：在文档中「下载 → xlsx」获取直链后填入
+CONFIG_EXCEL_URL = os.environ.get('CONFIG_EXCEL_URL', "https://hcnp900tw673.feishu.cn/sheets/ID3CsxLXOhb60gtjP9PcfEBWnxc?from=from_copylink")
+
+# 飞书开放平台 API 凭据（仅飞书文档需要，其他平台留空即可）
+# 获取步骤：
+#   1. 访问 https://open.feishu.cn/ → 创建企业自建应用
+#   2. 进入「权限管理」→ 搜索并开启 sheets:spreadsheet:readonly
+#   3. 进入「版本管理与发布」→ 申请发布（审核通过后生效）
+#   4. 在飞书电子表格右上角「分享」→ 添加该应用为协作者（或设为组织内可查看）
+#   5. 将 App ID 和 App Secret 填入下方（或设为对应环境变量）
+FEISHU_APP_ID     = os.environ.get('FEISHU_APP_ID',     'cli_a939789876385bc0')
+FEISHU_APP_SECRET = os.environ.get('FEISHU_APP_SECRET', 'hoiNNOoVnSBBA0jkDNIwGlH58byL5sc0')
 
 # 方案B：本地文件配置 (当在线表格未配置或下载失败时使用)
-CONFIG_LOCAL_FILE = 'device_config.xlsx'
+CONFIG_LOCAL_FILE = os.environ.get('CONFIG_LOCAL_FILE', 'device_config.xlsx')
 
 # 5. 其他配置
-EXCEL_PASSWORD = "Password2026"
 
 
 # =======================================================
@@ -62,6 +85,7 @@ def get_db_data():
         f"@{DB_CONFIG['host']}:{DB_CONFIG['port']}/{DB_CONFIG['db']}?charset={DB_CONFIG['charset']}"
     )
 
+    engine = None
     try:
         engine = create_engine(db_url)
 
@@ -97,6 +121,9 @@ def get_db_data():
     except Exception as e:
         logger.info(f"数据库读取失败: {e}")
         return pd.DataFrame()
+    finally:
+        if engine is not None:
+            engine.dispose()
 
 
 
@@ -137,6 +164,91 @@ def _read_excel_tolerant(filepath):
         return result
 
 
+def _fetch_feishu_as_df_dict(url):
+    """
+    通过飞书开放平台 API 读取电子表格，返回 {sheet名: DataFrame} 字典。
+    使用前提：
+      - FEISHU_APP_ID / FEISHU_APP_SECRET 已配置
+      - 应用已开通 sheets:spreadsheet:readonly 权限
+      - 文档已添加该应用为协作者（或组织内可查看）
+    """
+    # 从 URL 提取 spreadsheet token（路径最后一段，忽略查询参数）
+    m = re.search(r'/sheets/([A-Za-z0-9_-]+)', url)
+    if not m:
+        raise ValueError("无法从飞书 URL 提取 spreadsheet token，请确认链接格式")
+    spreadsheet_token = m.group(1)
+
+    # 1. 获取 tenant_access_token（有效期 2 小时，每次使用时实时获取）
+    auth_resp = requests.post(
+        'https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal',
+        json={'app_id': FEISHU_APP_ID, 'app_secret': FEISHU_APP_SECRET},
+        timeout=10
+    )
+    auth_resp.raise_for_status()
+    auth_data = auth_resp.json()
+    if auth_data.get('code') != 0:
+        raise RuntimeError(f"飞书认证失败 (code={auth_data.get('code')}): {auth_data.get('msg')}")
+    hdrs = {'Authorization': f"Bearer {auth_data['tenant_access_token']}"}
+
+    # 2. 读取所有 sheet 元数据（获取 sheetId、title、行列数）
+    meta_resp = requests.get(
+        f'https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/metainfo',
+        headers=hdrs, timeout=10
+    )
+    meta_resp.raise_for_status()
+    meta_data = meta_resp.json()
+    if meta_data.get('code') != 0:
+        raise RuntimeError(f"飞书元数据读取失败: {meta_data.get('msg')}")
+
+    def col_to_letter(n):
+        """将列号（1-based）转为 Excel 列字母，如 1→A, 27→AA"""
+        s = ''
+        while n > 0:
+            n, r = divmod(n - 1, 26)
+            s = chr(65 + r) + s
+        return s
+
+    # 3. 逐 sheet 读取单元格值
+    result = {}
+    for sheet in meta_data['data']['sheets']:
+        sid    = sheet['sheetId']
+        title  = sheet['title']
+        n_rows = sheet.get('rowCount', 500)
+        n_cols = sheet.get('columnCount', 26)
+        end_col = col_to_letter(min(n_cols, 52))          # 最多读 AZ（52 列）
+        range_str = f'{sid}!A1:{end_col}{n_rows}'
+
+        vr = requests.get(
+            f'https://open.feishu.cn/open-apis/sheets/v2/spreadsheets/{spreadsheet_token}/values/{range_str}',
+            headers=hdrs, timeout=15
+        )
+        vr.raise_for_status()
+        vdata = vr.json()
+        if vdata.get('code') != 0:
+            logger.info(f"[飞书] sheet '{title}' 读取失败: {vdata.get('msg')}")
+            result[title] = pd.DataFrame()
+            continue
+
+        rows = (vdata.get('data') or {}).get('valueRange', {}).get('values') or []
+        if not rows:
+            result[title] = pd.DataFrame()
+            continue
+
+        header = [str(c) if c is not None else '' for c in rows[0]]
+        # 裁掉末尾的空列头（飞书按 columnCount 返回整行，右侧空白列会产生多余的 ''）
+        while header and header[-1] == '':
+            header.pop()
+        n_header = len(header)
+        data = []
+        for row in rows[1:]:
+            # 行末空单元格可能被裁剪，补齐到表头长度
+            padded = list(row) + [None] * (n_header - len(row))
+            data.append(padded[:n_header])
+        result[title] = pd.DataFrame(data, columns=header)
+
+    return result
+
+
 def load_config():
     """加载配置：优先在线表格，失败则读取本地Excel"""
     device_config = {}
@@ -149,21 +261,101 @@ def load_config():
     loaded_source = None
 
     # 1. 尝试从在线表格读取
+    # 支持平台：
+    #   - 飞书文档：通过开放平台 API 读取（需配置 FEISHU_APP_ID / FEISHU_APP_SECRET）
+    #   - 腾讯文档：自动将分享链接转为导出链接后下载
+    #   - 金山文档/WPS：需在文档内「下载 → xlsx」获取直链后填入
+    #   - Office Excel 直链：直接下载
     if CONFIG_EXCEL_URL and "http" in CONFIG_EXCEL_URL:
         try:
-            logger.info(f"正在尝试从在线表格加载配置...")
-            resp = requests.get(CONFIG_EXCEL_URL, timeout=15)
-            resp.raise_for_status()
-            content_type = resp.headers.get('Content-Type', '')
-            if 'html' in content_type.lower():
-                raise ValueError("URL返回的是网页而非Excel文件，请填写直接下载链接")
-            xls = pd.read_excel(io.BytesIO(resp.content), sheet_name=None, engine='openpyxl')
-            df_devices, df_settings, df_metered_config, df_unregistered = _parse_xls(xls)
-            if not df_devices.empty:
-                loaded_source = "在线表格"
-                logger.info("在线配置加载成功")
+            logger.info("正在尝试从在线表格加载配置...")
+
+            _url_host = urllib.parse.urlparse(CONFIG_EXCEL_URL).netloc.lower()
+
+            def detect_provider(host):
+                if 'docs.qq.com' in host:
+                    return '腾讯文档'
+                if 'kdocs.cn' in host or 'wps.cn' in host or 'wps.com' in host:
+                    return '金山文档/WPS'
+                if 'feishu.cn' in host or 'larksuite.com' in host:
+                    return '飞书文档'
+                return None
+
+            _provider = detect_provider(_url_host)
+
+            # ── 飞书文档：走开放平台 API ──────────────────────────────────
+            if _provider == '飞书文档':
+                if FEISHU_APP_ID and FEISHU_APP_SECRET:
+                    logger.info("检测到飞书文档，通过飞书开放平台 API 读取...")
+                    xls = _fetch_feishu_as_df_dict(CONFIG_EXCEL_URL)
+                    df_devices, df_settings, df_metered_config, df_unregistered = _parse_xls(xls)
+                    if not df_devices.empty:
+                        loaded_source = "在线表格（飞书）"
+                        logger.info("飞书在线配置加载成功")
+                    else:
+                        logger.info("飞书表格无有效数据，将读取本地配置文件")
+                else:
+                    logger.info("检测到飞书文档，但未配置 FEISHU_APP_ID / FEISHU_APP_SECRET，"
+                                "无法通过 API 读取。请参考代码注释完成飞书应用创建后设置环境变量，"
+                                "或改用本地文件。")
+
+            # ── 其他平台：HTTP 下载 ───────────────────────────────────────
             else:
-                logger.info("在线表格无有效数据，尝试读取本地文件")
+                dl_headers = {
+                    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0.0.0 Safari/537.36',
+                    'Accept': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet, application/octet-stream, */*',
+                    'Accept-Language': 'zh-CN,zh;q=0.9',
+                }
+
+                def is_xlsx_bytes(content, url_path='', content_disp='', content_type=''):
+                    """通过文件头魔术字节或响应头判断内容是否为 Excel 文件"""
+                    # XLSX 基于 ZIP 格式，文件头为 PK\x03\x04
+                    if content and content[:4] == b"PK\x03\x04":
+                        return True
+                    if content_disp and ('.xlsx' in content_disp.lower() or '.xls' in content_disp.lower()):
+                        return True
+                    if url_path and url_path.lower().endswith(('.xlsx', '.xls')):
+                        return True
+                    if content_type and ('spreadsheet' in content_type or 'vnd.openxmlformats-officedocument' in content_type):
+                        return True
+                    return False
+
+                def try_request(url):
+                    resp = requests.get(url, headers=dl_headers, timeout=20, allow_redirects=True)
+                    resp.raise_for_status()
+                    return resp
+
+                # 腾讯文档：将分享链接转为导出链接
+                fetch_url = CONFIG_EXCEL_URL
+                if _provider == '腾讯文档':
+                    m = re.search(r"/d/([A-Za-z0-9_-]+)", CONFIG_EXCEL_URL)
+                    if m:
+                        fetch_url = f"https://docs.qq.com/d/export/{m.group(1)}?format=xlsx"
+                        logger.info(f"已将腾讯文档分享链接转换为下载链接: {fetch_url}")
+
+                resp = try_request(fetch_url)
+                content_type = resp.headers.get('Content-Type', '')
+                content_disp = resp.headers.get('Content-Disposition', '')
+                url_path = urllib.parse.urlparse(resp.url).path
+
+                if is_xlsx_bytes(resp.content[:512], url_path, content_disp, content_type):
+                    xls = pd.read_excel(io.BytesIO(resp.content), sheet_name=None, engine='openpyxl')
+                    df_devices, df_settings, df_metered_config, df_unregistered = _parse_xls(xls)
+                    if not df_devices.empty:
+                        loaded_source = "在线表格"
+                        logger.info("在线配置加载成功")
+                    else:
+                        logger.info("在线表格无有效数据，将读取本地配置文件")
+                else:
+                    # 返回的不是 Excel，给出平台相关提示后回退到本地文件
+                    if _provider == '腾讯文档':
+                        logger.info("腾讯文档导出失败，请检查链接是否有效，或在腾讯文档中点击「文件 → 导出 → Excel」获取导出链接。")
+                    elif _provider == '金山文档/WPS':
+                        logger.info("金山文档/WPS 分享链接无法自动下载（服务端返回预览页/人机验证）。"
+                                    "请在金山文档中点击「下载 → xlsx 格式」，将文件直链填入 CONFIG_EXCEL_URL，或改用本地文件。")
+                    else:
+                        logger.info("URL返回的是网页而非Excel文件，请填写直接下载链接")
+
         except Exception as e:
             logger.info(f"在线表格加载失败: {e}")
 
@@ -212,7 +404,7 @@ def load_config():
         logger.info(f"[未录入设备] 读取到 {len(df)} 行，列名: {list(df.columns)}")
         col_code   = _find_col(df.columns, '设备编号') or _find_col(df.columns, '设备编码')
         col_name   = _find_col(df.columns, '客户名称')
-        col_time   = _find_col(df.columns, '安装时间')
+        col_time   = _find_col(df.columns, '安装时间') or _find_col(df.columns, '安装日期')
         col_loc    = _find_col(df.columns, '安装地点') or _find_col(df.columns, '安装位置')
         col_barrel = _find_col(df.columns, '桶数')
         col_owner  = _find_col(df.columns, '设备归属')
@@ -380,48 +572,52 @@ def process_data(df):
         df = df[~mask].copy()
     logger.info(f"排除规则过滤后剩余: {len(df)} 台")
 
-    # 4. === 排序逻辑 ===
+    # 4. 排序（按安装时间升序）
     df['install_time'] = pd.to_datetime(df['install_time'])
     df = df.sort_values(by='install_time', ascending=True)
     df['install_time'] = df['install_time'].dt.strftime('%Y.%m.%d').fillna('')
 
-    # 4. 补全配置字段
+    # 5. 补全配置字段（桶数、设备归属）
     df['桶数'] = df['device_code'].apply(lambda x: device_config.get(x, {}).get('barrels', 1))
     df['设备归属'] = df['device_code'].apply(lambda x: device_config.get(x, {}).get('owner', '中润'))
 
-    # 5. 网络在线状态判断（直接使用数据库字段）
+    # 6. 网络在线状态判断（直接使用数据库字段）
     now = datetime.datetime.now()
 
     def check_sync(row):
         # 设备已停用
-        if row['device_status'] == 1:
-            return "停用"
-        m_time = row['modify_time']
+        if row.get('device_status') == 1:
+            return "disabled"
+        m_time = row.get('modify_time')
         # 从未上报数据
         if pd.isnull(m_time):
-            return "离线"
+            return "offline"
         # 超过 24 小时未上报
-        if (now - m_time).total_seconds() > 24 * 3600:
-            return "离线"
-        return "在线"
+        try:
+            if (now - m_time).total_seconds() > 24 * 3600:
+                return "offline"
+        except Exception:
+            # 若 modify_time 不是 datetime 类型，则认为不可用
+            return "offline"
+        return "online"
 
     df['网络同步'] = df.apply(check_sync, axis=1)
 
-    # 6. 数据清洗
+    # 7. 数据清洗
     df['avai_ratio'] = df['avai_ratio'].fillna('无数据')
     df['oil_model'] = df['oil_model'].fillna('未设置')
 
-    # 7. 在列重命名前，按 customer_id 筛出计量客户子集
+    # 8. 在列重命名前，按 customer_id 筛出计量客户子集
     if metered_customer_ids and 'customer_id' in df.columns:
         df_metered = df[df['customer_id'].isin(metered_customer_ids)].copy()
     else:
         df_metered = pd.DataFrame()
 
-    # 8. 生成序号
+    # 9. 生成序号
     df.reset_index(drop=True, inplace=True)
-    df.insert(0, '序号', range(1, 1 + len(df)))
+    df.insert(0, '序号', pd.Series(range(1, 1 + len(df))))
 
-    # 9. 列重命名与筛选
+    # 10. 列重命名与筛选
     rename_map = {
         'customer_name': '客户名称',
         'device_code': '设备编号',
@@ -436,7 +632,7 @@ def process_data(df):
     df = df.rename(columns=rename_map)
     df_out = df[[c for c in target_cols if c in df.columns]]
 
-    # 10. 补录配置文件中"未录入系统设备"的设备
+    # 11. 补录配置文件中"未录入系统设备"的设备
     if supplemental_devices:
         existing_codes = set(df_out['设备编号'].tolist())
         supp_rows = []
@@ -452,7 +648,7 @@ def process_data(df):
                 '库存(%)': '无数据',
                 '桶数': dev.get('桶数', 1),
                 '设备归属': dev.get('设备归属', '中润'),
-                '网络同步': '离线',
+                '网络同步': 'offline',
                 '安装时间': dev.get('安装时间', ''),
                 '安装地点': dev.get('安装地点', ''),
             })
@@ -461,14 +657,14 @@ def process_data(df):
             df_out_no_seq = df_out.drop(columns=['序号'])
             supp_cols = [c for c in df_out_no_seq.columns if c in df_supp.columns]
             df_out_no_seq = pd.concat([df_out_no_seq, df_supp[supp_cols]], ignore_index=True)
-            df_out_no_seq.insert(0, '序号', range(1, 1 + len(df_out_no_seq)))
+            df_out_no_seq.insert(0, '序号', pd.Series(range(1, 1 + len(df_out_no_seq))))
             df_out = df_out_no_seq
             logger.info(f"已补录 {len(supp_rows)} 台未入库设备，报表共 {len(df_out)} 台")
 
     # 对计量客户子集做同样的重命名与列筛选（序号独立编排）
     if not df_metered.empty:
         df_metered.reset_index(drop=True, inplace=True)
-        df_metered.insert(0, '序号', range(1, 1 + len(df_metered)))
+        df_metered.insert(0, '序号', pd.Series(range(1, 1 + len(df_metered))))
         df_metered = df_metered.rename(columns=rename_map)
         df_metered = df_metered[[c for c in target_cols if c in df_metered.columns]]
 
@@ -524,13 +720,6 @@ def generate_excel_with_format(df, filename, df_metered=None):
     sync_green_fmt = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100', 'border': 1, 'border_color': C_BORDER, 'align': 'center'})
     sync_red_fmt   = workbook.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006', 'border': 1, 'border_color': C_BORDER, 'align': 'center'})
     sync_gray_fmt  = workbook.add_format({'bg_color': '#D9D9D9', 'font_color': '#666666', 'border': 1, 'border_color': C_BORDER, 'align': 'center'})
-
-    protect_opts = {
-        'format_cells': False, 'format_columns': False,
-        'insert_rows': False, 'delete_rows': False,
-        'sort': True, 'autofilter': True,
-        'select_locked_cells': True, 'select_unlocked_cells': True
-    }
 
     # 各列宽度（列名 → 字符宽度）
     col_widths = {
@@ -591,11 +780,11 @@ def generate_excel_with_format(df, filename, df_metered=None):
         try:
             sync_idx = sheet_df.columns.get_loc('网络同步')
             ws.conditional_format(2, sync_idx, last_data_row, sync_idx,
-                {'type': 'text', 'criteria': 'containing', 'value': '在线', 'format': sync_green_fmt})
+                {'type': 'text', 'criteria': 'containing', 'value': 'online', 'format': sync_green_fmt})
             ws.conditional_format(2, sync_idx, last_data_row, sync_idx,
-                {'type': 'text', 'criteria': 'containing', 'value': '离线', 'format': sync_red_fmt})
+                {'type': 'text', 'criteria': 'containing', 'value': 'offline', 'format': sync_red_fmt})
             ws.conditional_format(2, sync_idx, last_data_row, sync_idx,
-                {'type': 'text', 'criteria': 'containing', 'value': '停用', 'format': sync_gray_fmt})
+                {'type': 'text', 'criteria': 'containing', 'value': 'disabled', 'format': sync_gray_fmt})
         except KeyError:
             pass
 
@@ -606,9 +795,6 @@ def generate_excel_with_format(df, filename, df_metered=None):
         # MOD(ROW(),2)=0 → Excel偶数行(4,6,8…) → 0-indexed行3,5,7… → 浅蓝
         ws.conditional_format(2, 0, last_data_row, last_col,
             {'type': 'formula', 'criteria': '=MOD(ROW(),2)=0', 'format': row_even_fmt})
-
-        # ── 工作表保护 ──
-        ws.protect(EXCEL_PASSWORD, options=protect_opts)
 
     apply_sheet_format(
         writer.sheets[main_sheet], df,
@@ -632,18 +818,23 @@ def send_to_robot(filename):
         return
 
     try:
-        key = WEBHOOK_URL.split("key=")[1]
+        # 用标准库解析 key，避免因 URL 参数顺序变化导致提取错误
+        parsed = urllib.parse.urlparse(WEBHOOK_URL)
+        key = urllib.parse.parse_qs(parsed.query).get('key', [''])[0]
+        if not key:
+            logger.info("Webhook URL 中未找到 key 参数，跳过发送。")
+            return
         upload_url = f"https://qyapi.weixin.qq.com/cgi-bin/webhook/upload_media?key={key}&type=file"
 
         with open(filename, 'rb') as f:
             files = {'file': (os.path.basename(filename), f,
                               'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')}
-            resp = requests.post(upload_url, files=files)
+            resp = requests.post(upload_url, files=files, timeout=30)
             media_id = resp.json().get('media_id')
 
         if media_id:
             msg = {"msgtype": "file", "file": {"media_id": media_id}}
-            requests.post(WEBHOOK_URL, json=msg)
+            requests.post(WEBHOOK_URL, json=msg, timeout=15)
             logger.info("报表发送成功")
         else:
             logger.info(f"上传失败: {resp.text}")
@@ -689,7 +880,12 @@ def daily_task():
 
     filename = f"{today_str}智能油库油量统计表.xlsx"
 
-    generate_excel_with_format(df_final, filename, df_metered)
+    try:
+        generate_excel_with_format(df_final, filename, df_metered)
+    except Exception as e:
+        logger.info(f"Excel 生成失败，终止本次任务: {e}")
+        return
+
     send_to_robot(filename)
     logger.info(f"处理完成: {filename}")
 
@@ -698,7 +894,7 @@ if __name__ == "__main__":
     print("=== 机器人运行中 ===")
 
     # 启动时立即执行一次
-    daily_task()
+    #daily_task() #仅限启动时测试使用
 
     # 注册每日 08:00 定时任务
     # schedule 以"距上次执行是否已满 24 小时"判断是否触发。

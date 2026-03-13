@@ -8,10 +8,11 @@
 
 - 从 MySQL 数据库一次查询获取所有设备信息（库存百分比、在线状态、安装信息等）
 - 根据 `modify_time` 距今时长及设备 `status` 字段，准确判断设备网络是否在线
-- 生成带条件格式（库存红绿灯 + 网络状态高亮）、冻结首行、自动筛选、工作表保护的 Excel 报表
+- 生成带条件格式（库存红绿灯 + 网络状态高亮）、冻结首行、自动筛选的 Excel 报表
 - 通过企业微信 Webhook 将报表文件推送到指定群
-- 支持在线表格（金山文档）或本地 Excel 双渠道加载设备配置
-- 每日 08:00 定时自动执行，并在启动时立即运行一次
+- 支持**飞书文档**（API）/ **腾讯文档**（自动转换）/ **本地 Excel** 三渠道加载设备配置
+- 支持"**未录入系统设备**"补录：设备已交付但未入库时，可在配置表中手动补录，自动追加到报表末尾
+- 每日 08:00 定时自动执行
 
 ---
 
@@ -19,8 +20,11 @@
 
 ```
 Daily_Report_Robot/
-├── main.py               # 主程序
-├── device_config.xlsx    # 本地设备配置（在线表格不可用时的备用，可用 Excel 直接编辑）
+├── main.py                # 主程序
+├── device_config.xlsx     # 本地设备配置（在线表格不可用时的备用）
+├── requirements.txt       # Python 依赖清单
+├── deploy_linux.sh        # Linux 一键部署脚本（systemd 服务）
+├── deploy_windows.bat     # Windows 一键部署脚本（NSSM 服务）
 └── README.md
 ```
 
@@ -28,47 +32,74 @@ Daily_Report_Robot/
 
 ## 环境依赖
 
-Python 3.8+，安装以下依赖：
+Python 3.8+，安装依赖：
 
 ```bash
-pip install pandas sqlalchemy pymysql requests xlsxwriter openpyxl schedule
+pip install -r requirements.txt
 ```
 
 ---
 
 ## 配置说明
 
-编辑 [main.py](main.py) 顶部的配置区域：
+编辑 [main.py](main.py) 顶部的配置区域，**所有配置均支持通过环境变量注入，优先级高于代码中的默认值**：
+
+### 1. 数据库配置
 
 ```python
-# 1. 数据库配置
 DB_CONFIG = {
-    'host': '数据库IP',
-    'port': 3306,
-    'user': '用户名',
-    'password': '密码',
-    'db': 'oil',
-    'charset': 'utf8mb4'
+    'host':     os.environ.get('DB_HOST',     '数据库IP'),
+    'port':     int(os.environ.get('DB_PORT', '3306')),
+    'user':     os.environ.get('DB_USER',     '用户名'),
+    'password': os.environ.get('DB_PASSWORD', '密码'),
+    'db':       os.environ.get('DB_NAME',     'oil'),
+    'charset':  'utf8mb4'
 }
-
-# 2. 企业微信机器人 Webhook
-WEBHOOK_URL = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY"
-
-# 3. 在线表格地址（金山文档/腾讯文档导出链接）
-CONFIG_EXCEL_URL = "https://www.kdocs.cn/l/..."
-
-# 4. 本地备用配置文件
-CONFIG_LOCAL_FILE = 'device_config.xlsx'
-
-# 5. Excel 报表保护密码
-EXCEL_PASSWORD = "your_password"
 ```
+
+### 2. 企业微信机器人 Webhook
+
+```python
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL',
+    "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY")
+```
+
+### 3. 在线配置文件
+
+```python
+# 填入分享链接即可，程序自动识别平台
+CONFIG_EXCEL_URL = os.environ.get('CONFIG_EXCEL_URL', "https://...")
+
+# 飞书文档专用 API 凭据（其他平台留空）
+FEISHU_APP_ID     = os.environ.get('FEISHU_APP_ID',     '')
+FEISHU_APP_SECRET = os.environ.get('FEISHU_APP_SECRET', '')
+
+# 本地备用配置文件（在线表格不可用时自动回退）
+CONFIG_LOCAL_FILE = os.environ.get('CONFIG_LOCAL_FILE', 'device_config.xlsx')
+```
+
+**各平台支持情况：**
+
+| 平台 | 填写内容 | 额外配置 |
+|------|----------|----------|
+| 飞书文档 | 分享链接（`.feishu.cn/sheets/...`） | 需配置 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`（见下方） |
+| 腾讯文档 | 分享链接（`docs.qq.com/d/...`） | 无，程序自动转换为导出链接 |
+| 金山文档/WPS | 文档内「下载 → xlsx 格式」获取的直链 | 无 |
+| Office Excel | 可直接访问的 xlsx 下载链接 | 无 |
+
+**飞书文档配置步骤（一次性）：**
+
+1. 访问 [open.feishu.cn](https://open.feishu.cn) → 创建企业自建应用
+2. 进入「权限管理」→ 搜索并开启 `sheets:spreadsheet:readonly`
+3. 进入「版本管理与发布」→ 申请发布（审核通过后生效）
+4. 打开飞书电子表格 → 右上角「分享」→ 添加该应用为协作者（或设为组织内可查看）
+5. 将 App ID 和 App Secret 填入代码或设置为环境变量
 
 ---
 
 ## 设备配置文件格式
 
-在线表格或本地 `device_config.xlsx` 须包含以下三个 Sheet：
+在线表格或本地 `device_config.xlsx` 须包含以下四个 Sheet：
 
 ### Sheet：设备配置
 
@@ -79,18 +110,16 @@ EXCEL_PASSWORD = "your_password"
 
 ### Sheet：全局设置
 
-| 排除客户名称           | 排除客户ID | 排除设备编码                      | 备注                             |
-|------------------------|------------|-----------------------------------|----------------------------------|
-| 中润                   | 100046     |                                   | 测试客户                         |
-| 贰壹陆                 | 100049     |                                   | 测试客户                         |
-| 浙江杰威               | 100066     | MO24032700700019                  | 已替换旧设备                     |
+| 排除客户名称           | 排除客户ID | 排除设备编码（...）               | 备注                              |
+|------------------------|------------|-----------------------------------|-----------------------------------|
+| 中润                   | 100046     |                                   | 测试客户，整体排除                |
+| 贰壹陆                 | 100049     |                                   | 测试客户，整体排除                |
+| 浙江杰威               | 100066     | MO24032700700019                  | 已替换旧设备                      |
 | 浙江联众汽车零部件有限公司 | 100079  | TW24011700700032,TW24011700700033 | 已替换旧设备（多台用英文逗号分隔）|
 
-> - `排除客户名称`：仅供运维人员阅读，**代码不使用此列**，填写方便核对即可。
+> - `排除客户名称`：仅供运维人员阅读，**代码不使用此列**。
 > - `排除客户ID`：**实际过滤依据**，使用数据库 `customer_id`，避免同名客户误排除。
-> - `排除设备编码`：若此列**为空**，则排除该客户的所有设备；若**非空**，则只排除填写的设备编号（多台设备以英文逗号 `,` 分隔），该客户其他设备正常显示（适用于新旧设备替换场景）。
-> - `备注`：仅供运维说明原因，代码不使用。
-> - 无客户关联（`customer_name` 为空）的设备，无论是否配置，均自动过滤不进报表。
+> - `排除设备编码`：**为空** → 排除该客户所有设备；**非空** → 只排除指定编号（英文逗号分隔），其余设备正常显示。
 
 ### Sheet：计量客户
 
@@ -99,20 +128,68 @@ EXCEL_PASSWORD = "your_password"
 | 浙江荣发动力股份有限公司   | 100058     |
 | 台州永裕工业有限公司       | 100070     |
 
-> - `计量客户名称`：仅供运维人员阅读，**代码不使用此列**。
-> - `计量客户ID`：**实际识别依据**，使用数据库 `customer_id`，精确匹配计量客户设备。
-> - 配置此 Sheet 后，报表 Excel 中将自动新增"**计量客户单列**" sheet，包含这些客户的设备，格式与主表完全一致，序号独立编排。
-> - 若此 Sheet 为空或不存在，报表只输出主表，行为与未配置时完全一致。
+> 配置后，报表将自动新增"**计量客户单列**" Sheet，格式与主表一致，序号独立编排。
+
+### Sheet：未录入系统设备
+
+> 设备硬件已交付给客户、但尚未录入管理系统（数据库无记录）时使用。设备录入系统后，需删除对应行。
+
+| 未录入系统设备客户名称(必填项) | 未录入系统设备编码(必填项) | 安装日期(可选项，格式示例：2026.03.13) | 安装地点(可选项) |
+|-------------------------------|---------------------------|----------------------------------------|-----------------|
+| 某客户                        | TW25010100300001          | 2026.01.15                             | 浙江杭州        |
+
+> - 补录设备将追加到报表主表末尾，`油品型号` 显示为"**设备未安装，数据库无数据**"，`网络同步` 显示 **offline**。
+> - 若该设备编号已在数据库中，程序自动跳过并在日志中提示，防止重复录入。
 
 ---
 
 ## 运行方式
 
+### 本地运行
+
 ```bash
 python main.py
 ```
 
-启动后立即执行一次，随后每天 08:00 自动触发。
+启动后每天 08:00 自动触发（若 08:00 后启动，次日 08:00 再触发）。
+
+### 服务器部署（Linux）
+
+```bash
+# 上传文件
+scp main.py requirements.txt deploy_linux.sh user@server:/tmp/
+
+# 一键部署为 systemd 服务（开机自启、崩溃自动重启）
+ssh user@server
+cd /tmp && chmod +x deploy_linux.sh && sudo ./deploy_linux.sh
+
+# 常用运维命令
+systemctl status  daily-report-robot   # 查看状态
+journalctl -u     daily-report-robot -f # 实时日志
+systemctl restart daily-report-robot   # 重启
+```
+
+### 服务器部署（Windows）
+
+```bat
+# 下载 NSSM（https://nssm.cc/download），将 nssm.exe 放到项目目录
+# 以管理员身份运行
+deploy_windows.bat
+```
+
+### 生产环境凭据注入（推荐）
+
+避免密钥硬编码在代码中，通过环境变量注入：
+
+```ini
+# Linux systemd 服务文件 [Service] 段
+Environment="DB_PASSWORD=your_password"
+Environment="WEBHOOK_KEY=your_key"
+Environment="FEISHU_APP_ID=cli_xxx"
+Environment="FEISHU_APP_SECRET=xxx"
+```
+
+修改后执行 `systemctl daemon-reload && systemctl restart daily-report-robot` 生效。
 
 ---
 
@@ -123,35 +200,36 @@ MySQL 数据库
     │
     │  一次 SQL 查询（t_device / t_customer / t_oil_type / t_device_oil）
     ▼
-get_db_data()        ← 返回设备信息 + customer_id + avai_ratio(库存%) + device_status + modify_time
-    │
+get_db_data()
+    │  返回：device_code, customer_id, customer_name, avai_ratio,
+    │        device_status, modify_time, oil_model, install_time, location
     ▼
 process_data()
-    ├── 加载设备配置（在线表格 / 本地文件）→ device_config + exclusion_rules + metered_customer_ids
-    ├── 过滤无客户关联的设备（customer_name 为空）
-    ├── 按 exclusion_rules 过滤（基于 customer_id 精准匹配）
-    │     ├── 排除设备编码为空 → 排除该客户全部设备
-    │     └── 排除设备编码非空 → 只排除指定旧设备编号，新设备保留
-    ├── 按安装时间升序排列
-    ├── 补全桶数、设备归属字段
-    ├── check_sync()  ← 依据 device_status + modify_time 判断在线/离线/停用
-    ├── 按 metered_customer_ids 筛出计量客户子集 → df_metered
-    └── 返回 (df_final, df_metered)
+    ├─ 1. load_config()  ← 飞书API / 腾讯文档导出 / 本地 Excel 三路回退
+    │       返回：device_config, exclusion_rules, metered_ids, supplemental_devices
+    ├─ 2. 过滤空客户名设备（customer_name 为 NULL/空/nan）
+    ├─ 3. 按 exclusion_rules 过滤（基于 customer_id 精准匹配）
+    ├─ 4. 按安装时间升序排列
+    ├─ 5. 补全桶数、设备归属字段
+    ├─ 6. check_sync()  ← device_status + modify_time 判断在线/离线/停用
+    ├─ 7. 数据清洗（空值填充）
+    ├─ 8. 按 metered_ids 筛出计量客户子集 → df_metered
+    ├─ 9. 生成序号
+    ├─ 10. 列重命名与筛选
+    └─ 11. 追加补录设备（supplemental_devices，仅追加数据库中不存在的编号）
     │
     ▼
 generate_excel_with_format(df_final, filename, df_metered)
-    ├── sheet "安卓设备日统计表"  ← 全量设备（含计量客户）
-    └── sheet "计量客户单列"      ← 仅计量客户设备（若 df_metered 非空则写入）
+    ├── Sheet "安卓设备日统计表"  ← 全量设备（含计量客户）
+    └── Sheet "计量客户单列"      ← 仅计量客户（df_metered 非空时写入）
     │
     ▼
-send_to_robot()                ← 上传并推送至企业微信
+send_to_robot()  ← 上传并推送至企业微信
 ```
 
 ---
 
 ## 网络在线状态判断逻辑
-
-直接使用数据库字段判断，无需额外 API 调用：
 
 | 优先级 | 条件 | 结果 |
 |--------|------|------|
@@ -160,25 +238,18 @@ send_to_robot()                ← 上传并推送至企业微信
 | 3 | `modify_time` 距今 **> 24 小时** | **离线**（红色）|
 | 4 | `modify_time` 距今 **≤ 24 小时** | **在线**（绿色）|
 
-> `t_device.status`：1=停用 2=离线 3=在线（由后端维护）
-> `modify_time`：设备最后一次上报数据的服务端记录时间，直接反映实际通信时效。
-
 ---
 
 ## Excel 报表说明
 
-报表文件包含最多两个 Sheet：
-
 | Sheet 名称 | 内容 | 触发条件 |
 |------------|------|----------|
 | 安卓设备日统计表 | 全量符合筛选条件的设备（含计量客户） | 始终输出 |
-| 计量客户单列 | 仅计量客户的设备，格式与主表一致，序号独立编排 | 配置文件存在"计量客户" Sheet 且非空时自动生成 |
+| 计量客户单列 | 仅计量客户设备，序号独立编排 | 配置文件存在"计量客户" Sheet 且非空时自动生成 |
 
-两个 Sheet 列顺序相同：
+列顺序：`序号 | 客户名称 | 设备编号 | 油品型号 | 库存(%) | 桶数 | 设备归属 | 网络同步 | 安装时间 | 安装地点`
 
-| 序号 | 客户名称 | 设备编号 | 油品型号 | 库存(%) | 桶数 | 设备归属 | 网络同步 | 安装时间 | 安装地点 |
-
-**库存(%)** 条件格式配色（数据来源：`t_device_oil.avai_ratio`，单位 %）：
+**库存(%) 条件格式：**
 
 | 区间 | 颜色 |
 |------|------|
@@ -187,110 +258,50 @@ send_to_robot()                ← 上传并推送至企业微信
 | ≤ 5% | 红色 |
 | 无数据 | 橙色 |
 
-**网络同步** 条件格式配色：
+**网络同步条件格式：**
 
 | 值 | 颜色 |
 |----|------|
-| 在线 | 绿色 |
-| 离线 | 红色 |
-| 停用 | 灰色 |
+| online | 绿色 |
+| offline | 红色 |
+| disabled | 灰色 |
 
 ---
 
 ## 设计决策记录
 
-### 同步时间获取：SQL 直查 vs API 调用
+### 配置来源：SQL 直查 vs API 调用
 
-早期版本通过调用后端 REST API（`queryDeviceOilStock`）获取 `modifyTime` / `syncTime`，后优化为直接从数据库读取。
-
-**选用 SQL 方案的原因：**
+早期版本调用后端 REST API 获取数据，现改为直接 SQL 查询：
 
 | 维度 | API 方案（旧） | SQL 方案（当前） |
 |------|--------------|----------------|
 | 架构复杂度 | 两步（DB + HTTP） | 一步（DB） |
 | 可靠性 | 额外故障点（网络/服务宕机） | 更可靠 |
 | 数据一致性 | 两次请求时间点不同 | 同一查询快照 |
-| 性能 | 多一次 HTTP 延迟（timeout 15s） | 无额外开销 |
-| 静默错误风险 | API 失败时全部误报"正常" | 无此风险 |
-| 数据来源 | 最终仍来自同一数据库 | 直接读取源头 |
 
-**核心变更（`main.py`）：**
+### 在线配置表加载策略
 
-- SQL 追加 `o.modify_time`、`d.status` 字段（复用已有 JOIN，无额外开销）
-- 删除 `get_api_data_map()` 函数及 `API_URL` 配置，移除 `import json`
-- `check_sync()` 直接读取行中的 datetime 字段，无需字符串解析
-- 修复：`设备数据同步` 列名与 `target_cols` 中的 `网络同步` 不一致，导致该列从未输出到报表
+| 平台 | 加载方式 | 原因 |
+|------|----------|------|
+| 飞书文档 | 飞书开放平台 API | 公开分享链接仅返回预览页，无法直接下载 |
+| 腾讯文档 | 自动转换分享链接为 `/d/export/{id}?format=xlsx` | 导出接口公开可访问 |
+| 金山文档/WPS | 用户手动获取直链 | 服务端返回人机验证页，无法自动下载 |
+| 本地 Excel | 直接读取文件 | 在线均失败时的兜底方案 |
 
-### 库存字段修正：avai_oil → avai_ratio
+### 排除规则：从名称匹配升级为 ID 匹配
 
-| 字段 | 含义 | 示例值 |
-|------|------|--------|
-| `avai_oil`（旧，错误） | 剩余油量（升） | 609.40 |
-| `avai_ratio`（新，正确） | 剩余油量比例（%） | 60.90 |
-
-原代码查询的是 `avai_oil`（升），但列名显示 `库存(%)`，条件格式阈值 5/30 对升数完全无效（609 升永远绿色）。修正为查询 `avai_ratio`，百分比数值与阈值匹配，红黄绿配色正常生效。
-
-### 网络在线判断逻辑修正
-
-| 旧逻辑（有误） | 新逻辑（正确） |
-|--------------|--------------|
-| `modify_time` 为空 → "正常" | `device_status == 1` → "停用" |
-| 需满足 `modify_time != sync_time` 才检查时效，两值相等时跳过（长期离线漏报） | `modify_time` 为空 → "离线" |
-| — | 距今 > 24h → "离线"，否则 → "在线" |
-
-`modify_time != sync_time` 条件是旧 API 方案的历史遗留，在 SQL 方案下无意义且导致漏判，已移除。
-
-### 排除规则重构：从客户名称匹配升级为客户ID匹配
-
-**历史问题：**
-
-早期版本使用客户名称字符串匹配进行过滤，存在两个缺陷：
-1. Excel 单元格名称前后带空格时，`isin()` 精确匹配失败，规则静默失效
-2. 不同客户若同名，会导致误排除
-
-**当前方案：基于 `customer_id` 的精准规则过滤**
-
-SQL 新增 `d.customer_id` 字段，配置文件改为填写客户ID，彻底规避名称歧义：
+早期按客户名称字符串过滤，存在同名误排除和空格匹配失败问题。改为按 `customer_id` 精准匹配：
 
 | 旧方案 | 当前方案 |
 |--------|---------|
 | 配置列：`排除客户`（名称字符串） | 配置列：`排除客户ID`（数据库 ID） |
-| 按 `customer_name` 做 `isin()` 匹配 | 按 `customer_id` 做精确匹配 |
 | 同名客户会被误排除 | ID 唯一，不存在误排除 |
 | 空格导致匹配静默失效 | ID 为数字，无空格问题 |
 
-**核心变更（`main.py`）：**
+### 库存字段修正：avai_oil → avai_ratio
 
-- SQL 新增 `d.customer_id` 字段
-- `load_config()` 解析 `全局设置` 时读取 `排除客户ID` + `排除设备编码`，构建 `exclusion_rules` 列表
-- `process_data()` 遍历 `exclusion_rules`，按规则逐条过滤
-
-### 客户名称为空的设备出现在报表中
-
-**根本原因：SQL 使用 LEFT JOIN，无客户关联的设备 `customer_name` 为 NULL。**
-
-`t_device` 与 `t_customer` 是左连接，未关联客户的设备 `customer_name` 返回数据库 `NULL`，经 pandas 读取后为 `NaN`，再经 `.astype(str)` 转换后变为字符串 `'nan'`。原有过滤逻辑仅排除配置列表中的名称，对 `NaN` / `'nan'` / 空字符串无处理，导致无客户的测试设备漏入报表。
-
-**修复：**
-
-在执行排除规则之前，先剔除 `customer_name` 为空、`NaN` 或 `'nan'` 的行：
-
-```python
-df = df[df['customer_name'].notna() & (df['customer_name'] != '') & (df['customer_name'] != 'nan')].copy()
-```
-
-### 新旧设备编号同时出现在报表中
-
-**根本原因：设备物理更换后，旧设备在数据库中未被逻辑删除。**
-
-旧设备在 `t_device` 表中 `del_status` 仍为 `1`（正常），SQL 过滤条件 `WHERE d.del_status = 1` 无法区分新旧设备，导致同一客户的新旧设备编号同时出现。
-
-**解决方案：`排除设备编码` 列支持精细化控制。**
-
-无需 DB 管理员介入，运维人员在 `device_config.xlsx` → Sheet `全局设置` 填写对应行的 `排除设备编码`：
-
-| 场景 | `排除设备编码` 填写方式 | 效果 |
-|------|------------------------|------|
-| 整个测试客户全部不显示 | 留空 | 该客户所有设备从报表中移除 |
-| 客户更换了 1 台旧设备 | 填写旧设备编号，如 `TW-OLD-01` | 仅旧设备隐藏，新设备正常显示 |
-| 客户更换了多台旧设备 | 多个编号以英文逗号分隔，如 `TW-OLD-01,TW-OLD-02` | 仅旧设备隐藏，新设备正常显示 |
+| 字段 | 含义 | 问题 |
+|------|------|------|
+| `avai_oil`（旧） | 剩余油量（升），如 609.40 | 列名显示`库存(%)`，阈值 5/30 对升数永远绿色 |
+| `avai_ratio`（当前） | 剩余百分比（%），如 60.90 | 与阈值匹配，红黄绿配色正常生效 |
