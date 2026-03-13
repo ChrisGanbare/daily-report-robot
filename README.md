@@ -82,7 +82,7 @@ CONFIG_LOCAL_FILE = os.environ.get('CONFIG_LOCAL_FILE', 'device_config.xlsx')
 
 | 平台 | 填写内容 | 额外配置 |
 |------|----------|----------|
-| 飞书文档 | 分享链接（`.feishu.cn/sheets/...`） | 需配置 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`（见下方） |
+| 飞书文档 | 分享链接（`.feishu.cn/sheets/...` 或移动后的 `.feishu.cn/file/...`） | 需配置 `FEISHU_APP_ID` / `FEISHU_APP_SECRET`（见下方） |
 | 腾讯文档 | 分享链接（`docs.qq.com/d/...`） | 无，程序自动转换为导出链接 |
 | 金山文档/WPS | 文档内「下载 → xlsx 格式」获取的直链 | 无 |
 | Office Excel | 可直接访问的 xlsx 下载链接 | 无 |
@@ -90,7 +90,9 @@ CONFIG_LOCAL_FILE = os.environ.get('CONFIG_LOCAL_FILE', 'device_config.xlsx')
 **飞书文档配置步骤（一次性）：**
 
 1. 访问 [open.feishu.cn](https://open.feishu.cn) → 创建企业自建应用
-2. 进入「权限管理」→ 搜索并开启 `sheets:spreadsheet:readonly`
+2. 进入「权限管理」→ 搜索并开启对应权限：
+   - 链接含 `/sheets/`（原生电子表格）：`sheets:spreadsheet:readonly`
+   - 链接含 `/file/`（文档移动后变为此格式）：`drive:drive:readonly`
 3. 进入「版本管理与发布」→ 申请发布（审核通过后生效）
 4. 打开飞书电子表格 → 右上角「分享」→ 添加该应用为协作者（或设为组织内可查看）
 5. 将 App ID 和 App Secret 填入代码或设置为环境变量

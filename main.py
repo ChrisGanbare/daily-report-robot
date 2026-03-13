@@ -1,5 +1,6 @@
 import io
 import logging
+import openpyxl
 import pandas as pd
 import requests
 import datetime
@@ -42,7 +43,7 @@ WEBHOOK_URL = os.environ.get(
 #   - 腾讯文档：直接填分享链接，程序自动转换为导出链接
 #   - 飞书文档：填分享链接 + 配置下方 FEISHU_APP_ID / FEISHU_APP_SECRET
 #   - 金山文档/WPS：在文档中「下载 → xlsx」获取直链后填入
-CONFIG_EXCEL_URL = os.environ.get('CONFIG_EXCEL_URL', "https://hcnp900tw673.feishu.cn/sheets/ID3CsxLXOhb60gtjP9PcfEBWnxc?from=from_copylink")
+CONFIG_EXCEL_URL = os.environ.get('CONFIG_EXCEL_URL', "https://hcnp900tw673.feishu.cn/file/WSH8bzoQGoJwEdxWPircIr0hnmf")
 
 # 飞书开放平台 API 凭据（仅飞书文档需要，其他平台留空即可）
 # 获取步骤：
@@ -167,16 +168,18 @@ def _read_excel_tolerant(filepath):
 def _fetch_feishu_as_df_dict(url):
     """
     通过飞书开放平台 API 读取电子表格，返回 {sheet名: DataFrame} 字典。
-    使用前提：
-      - FEISHU_APP_ID / FEISHU_APP_SECRET 已配置
-      - 应用已开通 sheets:spreadsheet:readonly 权限
-      - 文档已添加该应用为协作者（或组织内可查看）
+    支持两种链接格式：
+      - /sheets/TOKEN：飞书原生电子表格，调用 Sheets API 读取
+      - /file/TOKEN  ：云盘文件（上传的 xlsx 或文档移动后链接变为 /file/ 类型），
+                       调用 Drive 下载 API 获取二进制后用 openpyxl 解析
+    权限要求：
+      - /sheets/ 链接需开通 sheets:spreadsheet:readonly
+      - /file/   链接需开通 drive:drive:readonly（或 drive:file:readonly）
     """
-    # 从 URL 提取 spreadsheet token（路径最后一段，忽略查询参数）
-    m = re.search(r'/sheets/([A-Za-z0-9_-]+)', url)
-    if not m:
-        raise ValueError("无法从飞书 URL 提取 spreadsheet token，请确认链接格式")
-    spreadsheet_token = m.group(1)
+    m_sheets = re.search(r'/sheets/([A-Za-z0-9_-]+)', url)
+    m_file   = re.search(r'/file/([A-Za-z0-9_-]+)',   url)
+    if not m_sheets and not m_file:
+        raise ValueError("无法从飞书 URL 提取 token，请确认链接格式（应包含 /sheets/ 或 /file/ 路径）")
 
     # 1. 获取 tenant_access_token（有效期 2 小时，每次使用时实时获取）
     auth_resp = requests.post(
@@ -189,6 +192,30 @@ def _fetch_feishu_as_df_dict(url):
     if auth_data.get('code') != 0:
         raise RuntimeError(f"飞书认证失败 (code={auth_data.get('code')}): {auth_data.get('msg')}")
     hdrs = {'Authorization': f"Bearer {auth_data['tenant_access_token']}"}
+
+    # ── /file/ 链接：Drive 下载 API → openpyxl 解析 ─────────────────────────
+    if m_file and not m_sheets:
+        file_token = m_file.group(1)
+        logger.info(f"[飞书] 检测到 /file/ 链接，通过 Drive API 下载（token={file_token}）")
+        dl_resp = requests.get(
+            f'https://open.feishu.cn/open-apis/drive/v1/files/{file_token}/download',
+            headers=hdrs, timeout=30
+        )
+        dl_resp.raise_for_status()
+        wb = openpyxl.load_workbook(io.BytesIO(dl_resp.content), data_only=True)
+        result = {}
+        for sn in wb.sheetnames:
+            ws = wb[sn]
+            rows = list(ws.iter_rows(values_only=True))
+            if rows and rows[0]:
+                result[sn] = pd.DataFrame(rows[1:], columns=rows[0])
+            else:
+                result[sn] = pd.DataFrame()
+        wb.close()
+        return result
+
+    # ── /sheets/ 链接：Sheets API 读取 ──────────────────────────────────────
+    spreadsheet_token = m_sheets.group(1)
 
     # 2. 读取所有 sheet 元数据（获取 sheetId、title、行列数）
     meta_resp = requests.get(
@@ -894,7 +921,7 @@ if __name__ == "__main__":
     print("=== 机器人运行中 ===")
 
     # 启动时立即执行一次
-    #daily_task() #仅限启动时测试使用
+    daily_task() #仅限启动时测试使用
 
     # 注册每日 08:00 定时任务
     # schedule 以"距上次执行是否已满 24 小时"判断是否触发。
