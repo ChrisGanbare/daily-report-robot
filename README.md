@@ -12,6 +12,8 @@
 - 通过企业微信 Webhook 将报表文件推送到指定群
 - 支持**飞书文档**（API）/ **腾讯文档**（自动转换）/ **本地 Excel** 三渠道加载设备配置
 - 支持"**未录入系统设备**"补录：设备已交付但未入库时，可在配置表中手动补录，自动追加到报表末尾
+- 支持**飞书告警推送**：程序停止或出现非致命异常时，主动推送告警消息至指定飞书机器人
+- 在线配置加载成功后，自动与本地配置对比设备数量，差异 ≥ 5 台时推送告警
 - 每日 08:00 定时自动执行
 
 ---
@@ -78,6 +80,25 @@ FEISHU_APP_SECRET = os.environ.get('FEISHU_APP_SECRET', '')
 CONFIG_LOCAL_FILE = os.environ.get('CONFIG_LOCAL_FILE', 'device_config.xlsx')
 ```
 
+### 4. 飞书告警 Webhook
+
+```python
+# 用于接收程序异常告警的飞书机器人 Webhook 地址
+# 留空则不推送告警（静默失败，不影响主流程）
+FEISHU_ALERT_WEBHOOK = os.environ.get('FEISHU_ALERT_WEBHOOK', '')
+```
+
+**告警触发场景：**
+
+| 级别 | 触发场景 | 消息前缀 |
+|------|----------|----------|
+| 致命（fatal） | 程序被 Ctrl+C 或系统信号中断 | `[服务停止]` |
+| 致命（fatal） | 程序主循环抛出未捕获异常 | `[服务停止]` |
+| 警告（warning） | 在线配置缺少必需 Sheet，已切换本地文件 | `[运行警告]` |
+| 警告（warning） | 在线配置无有效数据，已切换本地文件 | `[运行警告]` |
+| 警告（warning） | 本地配置文件读取失败 | `[运行警告]` |
+| 警告（warning） | 在线与本地设备编号数量差异 ≥ 5 台 | `[运行警告]` |
+
 **各平台支持情况：**
 
 | 平台 | 填写内容 | 额外配置 |
@@ -105,12 +126,14 @@ CONFIG_LOCAL_FILE = os.environ.get('CONFIG_LOCAL_FILE', 'device_config.xlsx')
 
 ### Sheet：设备配置
 
-| 设备编号 | 桶数 | 设备归属 |
-|----------|------|----------|
-| TW001    | 2    | 中润     |
-| TW002    | 1    | 客户A    |
+| 设备编号 | 客户名称 | 桶数 | 设备归属 |
+|----------|----------|------|----------|
+| TW001    | 中润     | 2    | 中润     |
+| TW002    | 某客户A  | 1    | 客户A    |
 
-### Sheet：全局设置
+> `客户名称` 列仅供运维人员阅读，**代码不使用此列**，可留空。
+
+### Sheet：排除客户设置
 
 | 排除客户名称           | 排除客户ID | 排除设备编码（...）               | 备注                              |
 |------------------------|------------|-----------------------------------|-----------------------------------|
@@ -123,7 +146,7 @@ CONFIG_LOCAL_FILE = os.environ.get('CONFIG_LOCAL_FILE', 'device_config.xlsx')
 > - `排除客户ID`：**实际过滤依据**，使用数据库 `customer_id`，避免同名客户误排除。
 > - `排除设备编码`：**为空** → 排除该客户所有设备；**非空** → 只排除指定编号（英文逗号分隔），其余设备正常显示。
 
-### Sheet：计量客户
+### Sheet：计量客户设置
 
 | 计量客户名称               | 计量客户ID |
 |----------------------------|------------|
@@ -140,7 +163,7 @@ CONFIG_LOCAL_FILE = os.environ.get('CONFIG_LOCAL_FILE', 'device_config.xlsx')
 |-------------------------------|---------------------------|----------------------------------------|-----------------|
 | 某客户                        | TW25010100300001          | 2026.01.15                             | 浙江杭州        |
 
-> - 补录设备将追加到报表主表末尾，`油品型号` 显示为"**设备未安装，数据库无数据**"，`网络同步` 显示 **offline**。
+> - 补录设备将追加到报表主表末尾，`油品型号` 显示为"**设备未安装，数据库无数据**"，`网络同步` 显示 **disabled**（灰色）。
 > - 若该设备编号已在数据库中，程序自动跳过并在日志中提示，防止重复录入。
 
 ---
@@ -186,9 +209,10 @@ deploy_windows.bat
 ```ini
 # Linux systemd 服务文件 [Service] 段
 Environment="DB_PASSWORD=your_password"
-Environment="WEBHOOK_KEY=your_key"
+Environment="WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY"
 Environment="FEISHU_APP_ID=cli_xxx"
 Environment="FEISHU_APP_SECRET=xxx"
+Environment="FEISHU_ALERT_WEBHOOK=https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
 ```
 
 修改后执行 `systemctl daemon-reload && systemctl restart daily-report-robot` 生效。
@@ -247,7 +271,7 @@ send_to_robot()  ← 上传并推送至企业微信
 | Sheet 名称 | 内容 | 触发条件 |
 |------------|------|----------|
 | 安卓设备日统计表 | 全量符合筛选条件的设备（含计量客户） | 始终输出 |
-| 计量客户单列 | 仅计量客户设备，序号独立编排 | 配置文件存在"计量客户" Sheet 且非空时自动生成 |
+| 计量客户单列 | 仅计量客户设备，序号独立编排 | 配置文件存在"计量客户设置" Sheet 且非空时自动生成 |
 
 列顺序：`序号 | 客户名称 | 设备编号 | 油品型号 | 库存(%) | 桶数 | 设备归属 | 网络同步 | 安装时间 | 安装地点`
 

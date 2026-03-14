@@ -43,7 +43,7 @@ WEBHOOK_URL = os.environ.get(
 #   - 腾讯文档：直接填分享链接，程序自动转换为导出链接
 #   - 飞书文档：填分享链接 + 配置下方 FEISHU_APP_ID / FEISHU_APP_SECRET
 #   - 金山文档/WPS：在文档中「下载 → xlsx」获取直链后填入
-CONFIG_EXCEL_URL = os.environ.get('CONFIG_EXCEL_URL', "https://hcnp900tw673.feishu.cn/file/WSH8bzoQGoJwEdxWPircIr0hnmf")
+CONFIG_EXCEL_URL = os.environ.get('CONFIG_EXCEL_URL', "https://hcnp900tw673.feishu.cn/sheets/LwDxsQjMxhB2V6tD7LHcOTj5nIh?from=from_copylink")
 
 # 飞书开放平台 API 凭据（仅飞书文档需要，其他平台留空即可）
 # 获取步骤：
@@ -58,10 +58,39 @@ FEISHU_APP_SECRET = os.environ.get('FEISHU_APP_SECRET', 'hoiNNOoVnSBBA0jkDNIwGlH
 # 方案B：本地文件配置 (当在线表格未配置或下载失败时使用)
 CONFIG_LOCAL_FILE = os.environ.get('CONFIG_LOCAL_FILE', 'device_config.xlsx')
 
-# 5. 其他配置
+# 5. 飞书告警 Webhook（填入飞书群机器人 Webhook 地址，留空则不推送告警）
+# 用于推送两类告警：① 服务异常/终止；② 非致命运行警告（如切换本地配置等）
+FEISHU_ALERT_WEBHOOK = os.environ.get('FEISHU_ALERT_WEBHOOK', 'https://open.feishu.cn/open-apis/bot/v2/hook/96f76657-dd2c-4a10-8729-25c9a6821e77')
 
 
 # =======================================================
+
+def send_feishu_alert(level, title, detail=''):
+    """
+    推送告警到飞书群机器人。
+    level: 'fatal'   → 服务异常终止或人为终止
+           'warning' → 非致命问题（如切换本地配置、发送失败等）
+    未配置 FEISHU_ALERT_WEBHOOK 时静默跳过。
+    """
+    if not FEISHU_ALERT_WEBHOOK:
+        return
+    try:
+        prefix   = '[服务停止]' if level == 'fatal' else '[运行警告]'
+        now_str  = datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')
+        lines    = [f'【智能油库日报机器人】{prefix}', f'时间：{now_str}', f'原因：{title}']
+        if detail:
+            lines.append(f'详情：{detail}')
+        content  = '\n'.join(lines)
+        resp = requests.post(
+            FEISHU_ALERT_WEBHOOK,
+            json={'msg_type': 'text', 'content': {'text': content}},
+            timeout=10
+        )
+        resp.raise_for_status()
+        logger.info(f"[飞书告警] 已推送 {prefix}: {title}")
+    except Exception as e:
+        logger.info(f"[飞书告警] 推送失败（不影响主流程）: {e}")
+
 
 def setup_logging(log_file):
     """配置日志：同时输出到控制台和文件（每次调用先清除旧 handler，防止多日重复）"""
@@ -121,6 +150,7 @@ def get_db_data():
 
     except Exception as e:
         logger.info(f"数据库读取失败: {e}")
+        send_feishu_alert('warning', '数据库读取失败', str(e))
         return pd.DataFrame()
     finally:
         if engine is not None:
@@ -132,8 +162,8 @@ def _parse_xls(xls):
     """从已读取的 Excel 字典中提取四个 sheet"""
     return (
         xls.get('设备配置', pd.DataFrame()),
-        xls.get('全局设置', pd.DataFrame()),
-        xls.get('计量客户', pd.DataFrame()),
+        xls.get('排除客户设置', pd.DataFrame()),
+        xls.get('计量客户设置', pd.DataFrame()),
         xls.get('未录入系统设备', pd.DataFrame()),
     )
 
@@ -276,6 +306,30 @@ def _fetch_feishu_as_df_dict(url):
     return result
 
 
+def _check_device_count_diff(online_df_devices, threshold=1):
+    """对比在线与本地设备配置的设备编号数量，差异 >= threshold 时推送告警"""
+    if not os.path.exists(CONFIG_LOCAL_FILE):
+        return
+    try:
+        local_xls = pd.read_excel(CONFIG_LOCAL_FILE, sheet_name='设备配置', engine='openpyxl')
+        col = '设备编号'
+        online_codes = set(online_df_devices[col].dropna().astype(str)) if col in online_df_devices.columns else set()
+        local_codes  = set(local_xls[col].dropna().astype(str))         if col in local_xls.columns  else set()
+        n_online, n_local = len(online_codes), len(local_codes)
+        diff = abs(n_online - n_local)
+        if diff >= threshold:
+            logger.info(f"[内容比对] 在线设备数 {n_online}，本地设备数 {n_local}，差异 {diff} 台，触发告警")
+            send_feishu_alert(
+                'warning',
+                f'在线与本地设备配置差异较大（差异 {diff} 台）',
+                f'在线设备数: {n_online}，本地设备数: {n_local}，差异: {diff} 台，请确认配置是否正确。'
+            )
+        else:
+            logger.info(f"[内容比对] 在线设备数 {n_online}，本地设备数 {n_local}，差异 {diff} 台，无需告警")
+    except Exception as e:
+        logger.info(f"[内容比对] 读取本地配置失败，跳过差异检查: {e}")
+
+
 def load_config():
     """加载配置：优先在线表格，失败则读取本地Excel"""
     device_config = {}
@@ -315,12 +369,23 @@ def load_config():
                 if FEISHU_APP_ID and FEISHU_APP_SECRET:
                     logger.info("检测到飞书文档，通过飞书开放平台 API 读取...")
                     xls = _fetch_feishu_as_df_dict(CONFIG_EXCEL_URL)
-                    df_devices, df_settings, df_metered_config, df_unregistered = _parse_xls(xls)
-                    if not df_devices.empty:
-                        loaded_source = "在线表格（飞书）"
-                        logger.info("飞书在线配置加载成功")
+                    logger.info(f"[诊断] 在线表格实际包含 Sheet: {sorted(xls.keys())}")
+                    _required = {'设备配置', '排除客户设置', '计量客户设置', '未录入系统设备'}
+                    _missing = _required - set(xls.keys())
+                    if _missing:
+                        _s = '、'.join(sorted(_missing))
+                        logger.info(f"在线表格缺少以下 Sheet（可能被改名或删除）: {_s}，整体回退本地配置文件")
+                        send_feishu_alert('warning', '在线配置与本地配置不同步，已切换本地文件',
+                                          f'以下 Sheet 在在线表格中不存在（可能被改名或删除）：{_s}，请检查在线配置文件。')
                     else:
-                        logger.info("飞书表格无有效数据，将读取本地配置文件")
+                        df_devices, df_settings, df_metered_config, df_unregistered = _parse_xls(xls)
+                        if not df_devices.empty:
+                            loaded_source = "在线表格（飞书）"
+                            logger.info("飞书在线配置加载成功")
+                            _check_device_count_diff(df_devices)
+                        else:
+                            logger.info("飞书表格无有效数据，将读取本地配置文件")
+                            send_feishu_alert('warning', '飞书在线配置表格无有效数据，已切换本地文件')
                 else:
                     logger.info("检测到飞书文档，但未配置 FEISHU_APP_ID / FEISHU_APP_SECRET，"
                                 "无法通过 API 读取。请参考代码注释完成飞书应用创建后设置环境变量，"
@@ -367,12 +432,22 @@ def load_config():
 
                 if is_xlsx_bytes(resp.content[:512], url_path, content_disp, content_type):
                     xls = pd.read_excel(io.BytesIO(resp.content), sheet_name=None, engine='openpyxl')
-                    df_devices, df_settings, df_metered_config, df_unregistered = _parse_xls(xls)
-                    if not df_devices.empty:
-                        loaded_source = "在线表格"
-                        logger.info("在线配置加载成功")
+                    _required = {'设备配置', '排除客户设置', '计量客户设置', '未录入系统设备'}
+                    _missing = _required - set(xls.keys())
+                    if _missing:
+                        _s = '、'.join(sorted(_missing))
+                        logger.info(f"在线表格缺少以下 Sheet（可能被改名或删除）: {_s}，整体回退本地配置文件")
+                        send_feishu_alert('warning', '在线配置与本地配置不同步，已切换本地文件',
+                                          f'以下 Sheet 在在线表格中不存在（可能被改名或删除）：{_s}，请检查在线配置文件。')
                     else:
-                        logger.info("在线表格无有效数据，将读取本地配置文件")
+                        df_devices, df_settings, df_metered_config, df_unregistered = _parse_xls(xls)
+                        if not df_devices.empty:
+                            loaded_source = "在线表格"
+                            logger.info("在线配置加载成功")
+                            _check_device_count_diff(df_devices)
+                        else:
+                            logger.info("在线表格无有效数据，将读取本地配置文件")
+                            send_feishu_alert('warning', '在线配置表格无有效数据，已切换本地文件')
                 else:
                     # 返回的不是 Excel，给出平台相关提示后回退到本地文件
                     if _provider == '腾讯文档':
@@ -385,6 +460,7 @@ def load_config():
 
         except Exception as e:
             logger.info(f"在线表格加载失败: {e}")
+            send_feishu_alert('warning', '在线配置表格加载失败，已切换本地文件', str(e))
 
     # 2. 在线数据为空时，回退到本地文件
     if df_devices.empty and os.path.exists(CONFIG_LOCAL_FILE):
@@ -396,6 +472,7 @@ def load_config():
                 loaded_source = "本地文件"
         except Exception as e:
             logger.info(f"本地配置文件读取失败: {e}")
+            send_feishu_alert('warning', '本地配置文件读取失败，设备配置将使用默认值', str(e))
 
     # 3. 解析设备配置
     if not df_devices.empty:
@@ -474,7 +551,7 @@ def load_config():
     exclusion_rules = []
     if not df_settings.empty:
         df_settings.columns = df_settings.columns.str.strip()
-        logger.info(f"[配置] 全局设置列名: {list(df_settings.columns)}")
+        logger.info(f"[配置] 排除客户设置列名: {list(df_settings.columns)}")
 
         col_cid   = _find_col(df_settings.columns, '排除客户ID')
         col_codes = _find_col(df_settings.columns, '排除设备编码')
@@ -524,33 +601,6 @@ def load_config():
     else:
         logger.info("未加载到有效配置，将使用默认设置")
 
-    # 补充：若 计量客户/未录入系统设备 sheet 未从主渠道加载到，从本地文件补充（在线表格可能缺少该 sheet）
-    need_local_supplement = (df_metered_config.empty or df_unregistered.empty) and os.path.exists(CONFIG_LOCAL_FILE)
-    if need_local_supplement:
-        try:
-            xls_local = _read_excel_tolerant(CONFIG_LOCAL_FILE)
-
-            if df_metered_config.empty:
-                df_metered_local = xls_local.get('计量客户', pd.DataFrame())
-                if not df_metered_local.empty:
-                    df_metered_local.columns = df_metered_local.columns.str.strip()
-                    if '计量客户ID' in df_metered_local.columns:
-                        for raw in df_metered_local['计量客户ID'].dropna():
-                            cid = str(raw).strip()
-                            if '.' in cid:
-                                cid = cid.split('.')[0]
-                            if cid and cid != 'nan':
-                                metered_customer_ids.add(cid)
-                        logger.info(f"计量客户配置从本地文件补充加载，共 {len(metered_customer_ids)} 个")
-
-            if df_unregistered.empty:
-                df_unreg_local = xls_local.get('未录入系统设备', pd.DataFrame())
-                extra = _parse_unreg_df(df_unreg_local)
-                supplemental_devices.extend(extra)
-                if extra:
-                    logger.info(f"未录入系统设备从本地文件补充加载，共 {len(extra)} 台")
-        except Exception as e:
-            logger.info(f"本地文件补充加载失败: {e}")
 
     return device_config, exclusion_rules, metered_customer_ids, supplemental_devices
 
@@ -675,7 +725,7 @@ def process_data(df):
                 '库存(%)': '无数据',
                 '桶数': dev.get('桶数', 1),
                 '设备归属': dev.get('设备归属', '中润'),
-                '网络同步': 'offline',
+                '网络同步': 'disabled',
                 '安装时间': dev.get('安装时间', ''),
                 '安装地点': dev.get('安装地点', ''),
             })
@@ -751,7 +801,7 @@ def generate_excel_with_format(df, filename, df_metered=None):
     # 各列宽度（列名 → 字符宽度）
     col_widths = {
         '序号': 5, '客户名称': 22, '设备编号': 19,
-        '油品型号': 12, '库存(%)': 9, '桶数': 6,
+        '油品型号': 18, '库存(%)': 9, '桶数': 6,
         '设备归属': 10, '网络同步': 10, '安装时间': 12, '安装地点': 22,
     }
 
@@ -865,23 +915,37 @@ def send_to_robot(filename):
             logger.info("报表发送成功")
         else:
             logger.info(f"上传失败: {resp.text}")
+            send_feishu_alert('warning', '报表上传失败', resp.text)
     except Exception as e:
         logger.info(f"发送异常: {e}")
+        send_feishu_alert('warning', '报表发送异常', str(e))
 
 
-def clean_old_files():
-    """清理旧的报表文件和日志文件（日志文件与报表文件执行相同清理规则）"""
-    print("正在清理旧报表及日志文件...")
+def clean_old_files(keep=10):
+    """清理旧的报表和日志文件，按修改时间排序，超出保留数量时先删最旧的。"""
+    print(f"正在清理旧报表及日志文件（最多保留 {keep} 天）...")
     try:
-        for f in os.listdir('.'):
-            is_report = f.endswith('.xlsx') and "智能油库油量统计表" in f
-            is_log = f.endswith('.log') and "智能油库运行日志" in f
-            if is_report or is_log:
+        cwd = os.path.abspath('.')
+        reports, logs = [], []
+        for f in os.listdir(cwd):
+            path = os.path.join(cwd, f)
+            if not os.path.isfile(path):
+                continue
+            mtime = os.path.getmtime(path)
+            if f.endswith('.xlsx') and '智能油库油量统计表' in f:
+                reports.append((mtime, path))
+            elif f.endswith('.log') and '智能油库运行日志' in f:
+                logs.append((mtime, path))
+
+        for group in (reports, logs):
+            group.sort()                    # 升序：最旧在前
+            to_delete = group[:-keep] if len(group) > keep else []
+            for _, path in to_delete:
                 try:
-                    os.remove(f)
-                    print(f"已删除旧文件: {f}")
+                    os.remove(path)
+                    print(f"已删除旧文件: {os.path.basename(path)}")
                 except Exception as e:
-                    print(f"删除文件 {f} 失败: {e}")
+                    print(f"删除文件 {os.path.basename(path)} 失败: {e}")
     except Exception as e:
         print(f"清理文件过程出错: {e}")
 
@@ -911,6 +975,7 @@ def daily_task():
         generate_excel_with_format(df_final, filename, df_metered)
     except Exception as e:
         logger.info(f"Excel 生成失败，终止本次任务: {e}")
+        send_feishu_alert('warning', 'Excel 报表生成失败，本次任务已终止', str(e))
         return
 
     send_to_robot(filename)
@@ -921,7 +986,7 @@ if __name__ == "__main__":
     print("=== 机器人运行中 ===")
 
     # 启动时立即执行一次
-    daily_task() #仅限启动时测试使用
+    daily_task() #仅限程序启动时测试使用
 
     # 注册每日 08:00 定时任务
     # schedule 以"距上次执行是否已满 24 小时"判断是否触发。
@@ -938,5 +1003,9 @@ if __name__ == "__main__":
             time.sleep(60)
     except KeyboardInterrupt:
         logger.info("程序被用户中断，正在优雅退出...")
-        # 可以在这里添加资源清理代码
+        send_feishu_alert('fatal', '程序被人为中断（Ctrl+C 或系统停止信号）')
         logger.info("程序已安全退出")
+    except Exception as e:
+        logger.info(f"程序异常终止: {e}")
+        send_feishu_alert('fatal', f'程序异常终止: {type(e).__name__}', str(e))
+        raise

@@ -36,9 +36,10 @@ WorkingDirectory=$INSTALL_DIR
 
 # ── 敏感凭据建议通过环境变量注入，避免写在代码中 ──
 # Environment="DB_PASSWORD=your_password"
-# Environment="WEBHOOK_KEY=your_key"
+# Environment="WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY"
 # Environment="FEISHU_APP_ID=cli_xxx"
 # Environment="FEISHU_APP_SECRET=xxx"
+# Environment="FEISHU_ALERT_WEBHOOK=https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
 
 ExecStart=$PYTHON $INSTALL_DIR/main.py
 Restart=always
