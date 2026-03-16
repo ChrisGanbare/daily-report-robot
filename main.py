@@ -787,26 +787,45 @@ def process_data(df):
                 _detail
             )
 
-        # D. 总数核对：设备配置总数 = 数据库设备数(含排除/计量) + 补录不在DB设备数
-        _expected = len(_db_codes) + len(_supp_not_db)
+        # D. 总数核对：设备配置总数 = 非排除数据库设备数 + 补录不在DB设备数
+        # 先根据排除规则计算被命中的DB设备，排除设备无需录入配置表，不计入预期总数
+        _excl_db_codes: set = set()
+        if exclusion_rules and 'customer_id' in df.columns:
+            _df_cid = df['customer_id'].astype(str)
+            _df_dcode = df['device_code'].astype(str)
+            for _rule in exclusion_rules:
+                _rcid  = str(_rule['customer_id'])
+                _rcodes = _rule.get('device_codes', [])
+                _mask_cid = _df_cid == _rcid
+                if _rcodes:
+                    _excl_db_codes.update(_df_dcode[_mask_cid & _df_dcode.isin(_rcodes)])
+                else:
+                    _excl_db_codes.update(_df_dcode[_mask_cid])
+
+        _non_excl_db = _db_codes - _excl_db_codes
+        _expected = len(_non_excl_db) + len(_supp_not_db)
         _actual   = len(_cfg_codes)
         if _actual != _expected:
-            _db_not_in_cfg = _db_codes - _cfg_codes
+            # 非排除DB设备中未录入配置的设备（这些设备才需要在配置表中）
+            _db_not_in_cfg = _non_excl_db - _cfg_codes
             _lines = [
                 f"设备配置总数: {_actual} 台，预期: {_expected} 台",
-                f"  数据库设备(正常+排除+计量): {len(_db_codes)} 台",
+                f"  数据库设备(全量): {len(_db_codes)} 台",
+                f"  其中排除规则命中: {len(_excl_db_codes)} 台（不计入预期总数）",
+                f"  非排除数据库设备: {len(_non_excl_db)} 台",
                 f"  补录设备(不在DB): {len(_supp_not_db)} 台",
             ]
             if _not_in_db:
-                _lines.append(f"  配置中无效编号(非补录且不在DB): {sorted(_not_in_db)} 共 {len(_not_in_db)} 台")
+                _lines.append(f"  配置中无效编号(非补录且不在DB，共 {len(_not_in_db)} 台):")
+                _lines.extend(f"    - {c}" for c in sorted(_not_in_db))
             if _db_not_in_cfg:
-                _sample = sorted(_db_not_in_cfg)[:10]
-                _lines.append(f"  DB设备未录入配置(将用默认桶数/归属): {_sample}{'...' if len(_db_not_in_cfg) > 10 else ''} 共 {len(_db_not_in_cfg)} 台")
+                _lines.append(f"  非排除DB设备未录入配置(将用默认桶数/归属，共 {len(_db_not_in_cfg)} 台):")
+                _lines.extend(f"    - {c}" for c in sorted(_db_not_in_cfg))
             _detail = '\n'.join(_lines)
             logger.info(f"[设备配置] 总数核对不符:\n{_detail}")
             send_feishu_alert(
                 'warning',
-                f'设备配置总数核对不符：配置 {_actual} 台，预期 {_expected} 台（数据库 {len(_db_codes)} + 补录 {len(_supp_not_db)}）',
+                f'设备配置总数核对不符：配置 {_actual} 台，预期 {_expected} 台（非排除DB {len(_non_excl_db)} + 补录 {len(_supp_not_db)}）',
                 _detail
             )
 
