@@ -13,7 +13,7 @@ from sqlalchemy import create_engine
 
 logger = logging.getLogger('daily_report')
 
-__version__ = '1.0.0'
+__version__ = '1.0.1'
 
 # ================= 配置区域 =================
 # 敏感凭据优先从环境变量读取，未设置时使用下方默认值。
@@ -772,8 +772,9 @@ def process_data(df):
 
     # 2b. 设备配置 — DB匹配校验 & 总数核对
     # 在排除规则执行前完成，此时 df 代表数据库中全部有效设备（正常+排除+计量）
+    # _db_codes 提至块外，供 Step 11 补录设备"已入库"判断使用（含被排除设备）
+    _db_codes = set(df['device_code'].astype(str).str.strip())
     if device_config:
-        _db_codes    = set(df['device_code'].astype(str).str.strip())
         _cfg_codes   = set(device_config.keys())
         _supp_codes  = {dev['设备编号'] for dev in supplemental_devices}
         _supp_not_db = _supp_codes - _db_codes   # 真正不在DB的补录设备
@@ -943,12 +944,14 @@ def process_data(df):
 
     # 11. 补录配置文件中"未录入系统设备"的设备
     if supplemental_devices:
-        existing_codes = set(df_out['设备编号'].tolist())
         supp_rows = []
-        supp_found_in_db = []   # 补录设备编号已出现在DB报表中，需提醒维护人员清理
+        supp_found_in_db = []   # 补录设备编号已在DB中，需提醒维护人员清理
         for dev in supplemental_devices:
             code = dev.get('设备编号', '')
-            if code in existing_codes:
+            # 以全量 _db_codes 判断"已入库"，而非 existing_codes（报表中已过滤排除设备）
+            # 修复：设备在DB但被排除规则过滤时，existing_codes 不含该设备，
+            # 原逻辑会将其重新追加为补录设备（disabled），导致已排除设备出现在报表末尾
+            if code in _db_codes:
                 logger.info(f'[未录入设备] 设备 {code} 已在数据库中，已按正常设备处理，请从配置文件"未录入系统设备" Sheet 中删除该记录')
                 supp_found_in_db.append(code)
                 continue
