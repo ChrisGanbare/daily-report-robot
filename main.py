@@ -13,6 +13,8 @@ from sqlalchemy import create_engine
 
 logger = logging.getLogger('daily_report')
 
+__version__ = '1.0.0'
+
 # ================= 配置区域 =================
 # 敏感凭据优先从环境变量读取，未设置时使用下方默认值。
 # 生产环境建议通过系统环境变量或 .env 文件注入，避免凭据留存于代码中。
@@ -1070,12 +1072,13 @@ def generate_excel_with_format(df, filename, df_metered=None):
             if col_name == '网络同步':
                 ws.write_comment(1, col_num,
                     '【网络同步状态说明】\n'
-                    '✅ online       — 24h 内正常上报\n'
-                    '⚠️ offline_warn — 24~72h 未上报，短期预警\n'
-                    '❌ offline      — 超过 72h 未上报，长期失联\n'
-                    '🔘 never_synced — 从未上报，设备未激活\n'
-                    '⬛ disabled     — 已停用',
-                    {'x_scale': 1.8, 'y_scale': 1.6, 'font_size': 10}
+                    'online        — 24h 内正常上报（绿色）\n'
+                    'offline_warn  — 24~72h 未上报，短期预警（橙色）\n'
+                    'offline       — 超过 72h 未上报，长期失联（红色）\n'
+                    'never_synced  — 从未上报，设备未激活（紫色）\n'
+                    'disabled      — 已停用，或设备待安装调试\n'
+                    '                且未录入系统（灰色）',
+                    {'x_scale': 2.5, 'y_scale': 2.2, 'font_size': 10}
                 )
 
         # ── 列宽 ──
@@ -1225,7 +1228,7 @@ def daily_task():
     clean_old_files()
     setup_logging(log_file)
 
-    logger.info(f"开始执行，日志文件: {log_file}")
+    logger.info(f"智能油库日报机器人 v{__version__} 开始执行，日志文件: {log_file}")
 
     df_db = get_db_data()
 
