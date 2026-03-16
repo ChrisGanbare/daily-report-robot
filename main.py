@@ -851,15 +851,16 @@ def process_data(df):
         if row.get('device_status') == 1:
             return "disabled"
         m_time = row.get('modify_time')
-        # 从未上报数据
+        # 从未上报数据（设备从未激活）
         if pd.isnull(m_time):
-            return "offline"
-        # 超过 24 小时未上报
+            return "never_synced"
         try:
-            if (now - m_time).total_seconds() > 24 * 3600:
-                return "offline"
+            elapsed_h = (now - m_time).total_seconds() / 3600
+            if elapsed_h > 72:
+                return "offline"        # 长期失联（>72h），需处理
+            if elapsed_h > 24:
+                return "offline_warn"   # 短期离线（24~72h），预警
         except Exception:
-            # 若 modify_time 不是 datetime 类型，则认为不可用
             return "offline"
         return "online"
 
@@ -1006,9 +1007,11 @@ def generate_excel_with_format(df, filename, df_metered=None):
     inv_yellow_fmt = workbook.add_format({'bg_color': '#FFEB9C', 'font_color': '#9C5700', 'border': 1, 'border_color': C_BORDER, 'align': 'center'})
     inv_red_fmt    = workbook.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006', 'border': 1, 'border_color': C_BORDER, 'align': 'center'})
     inv_orange_fmt = workbook.add_format({'bg_color': '#FFCC99', 'font_color': '#333333', 'border': 1, 'border_color': C_BORDER, 'align': 'center'})
-    sync_green_fmt = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100', 'border': 1, 'border_color': C_BORDER, 'align': 'center'})
-    sync_red_fmt   = workbook.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006', 'border': 1, 'border_color': C_BORDER, 'align': 'center'})
-    sync_gray_fmt  = workbook.add_format({'bg_color': '#D9D9D9', 'font_color': '#666666', 'border': 1, 'border_color': C_BORDER, 'align': 'center'})
+    sync_green_fmt  = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100', 'border': 1, 'border_color': C_BORDER, 'align': 'center'})
+    sync_warn_fmt   = workbook.add_format({'bg_color': '#FFD966', 'font_color': '#7D4C00', 'border': 1, 'border_color': C_BORDER, 'align': 'center'})
+    sync_red_fmt    = workbook.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006', 'border': 1, 'border_color': C_BORDER, 'align': 'center'})
+    sync_purple_fmt = workbook.add_format({'bg_color': '#E2CFEE', 'font_color': '#7030A0', 'border': 1, 'border_color': C_BORDER, 'align': 'center'})
+    sync_gray_fmt   = workbook.add_format({'bg_color': '#D9D9D9', 'font_color': '#666666', 'border': 1, 'border_color': C_BORDER, 'align': 'center'})
 
     # 各列宽度（列名 → 字符宽度）
     col_widths = {
@@ -1069,15 +1072,19 @@ def generate_excel_with_format(df, filename, df_metered=None):
         ws.conditional_format(2, inv_idx, last_data_row, inv_idx,
             {'type': 'cell', 'criteria': '<=', 'value': 5, 'format': inv_red_fmt})
 
-        # ② 网络同步列
+        # ② 网络同步列（全部用 equal to 精确匹配，避免 offline_warn 被 offline 规则误命中）
         try:
             sync_idx = sheet_df.columns.get_loc('网络同步')
             ws.conditional_format(2, sync_idx, last_data_row, sync_idx,
-                {'type': 'text', 'criteria': 'containing', 'value': 'online', 'format': sync_green_fmt})
+                {'type': 'cell', 'criteria': '==', 'value': '"online"',       'format': sync_green_fmt})
             ws.conditional_format(2, sync_idx, last_data_row, sync_idx,
-                {'type': 'text', 'criteria': 'containing', 'value': 'offline', 'format': sync_red_fmt})
+                {'type': 'cell', 'criteria': '==', 'value': '"offline_warn"', 'format': sync_warn_fmt})
             ws.conditional_format(2, sync_idx, last_data_row, sync_idx,
-                {'type': 'text', 'criteria': 'containing', 'value': 'disabled', 'format': sync_gray_fmt})
+                {'type': 'cell', 'criteria': '==', 'value': '"offline"',      'format': sync_red_fmt})
+            ws.conditional_format(2, sync_idx, last_data_row, sync_idx,
+                {'type': 'cell', 'criteria': '==', 'value': '"never_synced"', 'format': sync_purple_fmt})
+            ws.conditional_format(2, sync_idx, last_data_row, sync_idx,
+                {'type': 'cell', 'criteria': '==', 'value': '"disabled"',     'format': sync_gray_fmt})
         except KeyError:
             pass
 
