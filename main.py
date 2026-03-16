@@ -121,29 +121,35 @@ def get_db_data():
 
         sql = """
         SELECT
-            d.device_code,
-            d.create_time as install_time,
-            d.status as device_status,
-            d.customer_id,
-            c.customer_name,
-            CONCAT(IFNULL(d.province_name,''), IFNULL(d.city_name,''), IFNULL(d.district_name,'')) as location,
-            ot.oil_model,
-            o.avai_ratio,
-            o.modify_time
+            d.device_code,                  -- 设备编号
+            d.create_time as install_time,  -- 安装时间
+            d.status as device_status,      -- 设备状态：1=停用 2=离线 3=在线
+            d.customer_id,                  -- 客户ID（用于排除规则、计量客户筛选）
+            c.customer_name,                -- 客户名称
+            CONCAT(IFNULL(d.province_name,''), IFNULL(d.city_name,''), IFNULL(d.district_name,'')) as location, -- 安装地点
+            ot.oil_model,                   -- 油品型号
+            o.avai_ratio,                   -- 当前库存百分比
+            o.modify_time                   -- 最后上报时间（用于判断网络在线状态）
         FROM
             t_device d
+            -- 关联客户表，获取客户名称
             LEFT JOIN t_customer c ON d.customer_id = c.id
+            -- 取每台设备最新一条有效油品配置（status=1 过滤已删除配置，INNER JOIN 取 max(id) 去重）
             LEFT JOIN (
                 SELECT ta.* FROM t_oil_type ta
                 INNER JOIN ( SELECT device_id, max(id) AS id FROM t_oil_type WHERE status=1 GROUP BY device_id ) tb ON ta.id = tb.id
             ) ot ON d.id = ot.device_id
+            -- 取每个油品配置最新一条库存记录（max(id) 去重，不过滤 status，最新插入即为有效值）
             LEFT JOIN (
                 SELECT oil_type_id, avai_ratio, modify_time
                 FROM t_device_oil
                 WHERE id IN (SELECT MAX(id) FROM t_device_oil GROUP BY oil_type_id)
             ) o ON ot.id = o.oil_type_id
         WHERE
-            d.del_status = 1
+            d.del_status = 1        -- 排除已删除设备（del_status: 1=正常 2=删除）
+            AND c.id IS NOT NULL    -- 第一道防线：排除无客户关联的设备
+            AND c.customer_name IS NOT NULL
+            AND c.customer_name != ''
         """
         df = pd.read_sql(sql, engine)
         return df
@@ -475,15 +481,32 @@ def load_config():
             send_feishu_alert('warning', '本地配置文件读取失败，设备配置将使用默认值', str(e))
 
     # 3. 解析设备配置
+    _dev_empty_code_rows = []       # 设备编号为空的行号
+    _dev_barrel_owner_issues = []   # (行号, 设备编号, 缺失字段描述) — 供后续过滤补录设备后告警
     if not df_devices.empty:
         df_devices.columns = df_devices.columns.str.strip()
-        for _, row in df_devices.iterrows():
-            code = str(row.get('设备编号', '')).strip()
-            if code and code != 'nan':
-                device_config[code] = {
-                    'barrels': row.get('桶数', 1),
-                    'owner': row.get('设备归属', '中润')
-                }
+        for _row_idx, (_, row) in enumerate(df_devices.iterrows(), start=2):
+            _code_raw = row.get('设备编号')
+            code = '' if (_code_raw is None or (isinstance(_code_raw, float) and pd.isna(_code_raw))) else str(_code_raw).strip()
+            if not code or code == 'nan':
+                _dev_empty_code_rows.append(_row_idx)
+                continue
+            barrels = row.get('桶数', 1)
+            owner   = row.get('设备归属', '中润')
+            device_config[code] = {'barrels': barrels, 'owner': owner}
+            # 收集桶数/归属缺失问题（是否为补录设备须在step6后才能判断，此处仅收集）
+            _barrel_empty = barrels is None or (isinstance(barrels, float) and pd.isna(barrels))
+            _owner_val    = str(owner).strip() if owner is not None else ''
+            _owner_empty  = _owner_val in ('', 'nan') or (isinstance(owner, float) and pd.isna(owner))
+            if _barrel_empty or _owner_empty:
+                _missing = []
+                if _barrel_empty: _missing.append('桶数')
+                if _owner_empty:  _missing.append('设备归属')
+                _dev_barrel_owner_issues.append((_row_idx, code, '、'.join(_missing) + '为空'))
+        if _dev_empty_code_rows:
+            _detail = '\n'.join(f"  第{r}行 | 原因：设备编号为空" for r in _dev_empty_code_rows)
+            logger.info(f"[设备配置] 以下 {len(_dev_empty_code_rows)} 行设备编号为空，已跳过:\n{_detail}")
+            send_feishu_alert('warning', f'设备配置校验失败：{len(_dev_empty_code_rows)} 行设备编号为空，请检查"设备配置" Sheet', _detail)
 
     # 用子串匹配查找列名，容忍列标题带有括号说明文字或尾部空格（如"排除设备编码（...）"）
     def _find_col(columns, keyword):
@@ -500,7 +523,10 @@ def load_config():
         return default if s == 'nan' else s
 
     def _parse_unreg_df(df):
-        """从 '未录入系统设备' DataFrame 解析补录设备列表（列名用子串匹配）"""
+        """从 '未录入系统设备' DataFrame 解析补录设备列表（列名用子串匹配）
+        必填校验：客户名称、设备编号均不可为空，且设备编号在批次内不可重复。
+        校验失败的行打印日志并推送飞书告警，不影响其他行的正常解析。
+        """
         if df.empty:
             return []
         df = df.copy()
@@ -516,14 +542,35 @@ def load_config():
         if not col_code:
             logger.info("[未录入设备] 未找到设备编号列，跳过解析（请确认列标题包含'设备编号'）")
             return []
+
         devices = []
-        for _, row in df.iterrows():
+        failed = []           # 校验失败的条目，格式：(行号, 设备编号或'-', 原因)
+        seen_codes = set()    # 批次内已出现的设备编号，用于重复检测
+
+        for row_idx, (_, row) in enumerate(df.iterrows(), start=2):  # start=2：Excel 第1行为表头
             code_val = row.get(col_code)
-            if code_val is None or (isinstance(code_val, float) and pd.isna(code_val)):
-                continue
-            code = str(code_val).strip()
+            code = '' if (code_val is None or (isinstance(code_val, float) and pd.isna(code_val))) else str(code_val).strip()
             if not code or code == 'nan':
+                reason = '设备编号为空'
+                logger.info(f"[未录入设备] 第{row_idx}行录入失败：{reason}")
+                failed.append((row_idx, '-', reason))
                 continue
+
+            name_val = row.get(col_name) if col_name else None
+            name = '' if (name_val is None or (isinstance(name_val, float) and pd.isna(name_val))) else str(name_val).strip()
+            if not name or name == 'nan':
+                reason = '客户名称为空'
+                logger.info(f"[未录入设备] 第{row_idx}行录入失败：设备编号={code}，{reason}")
+                failed.append((row_idx, code, reason))
+                continue
+
+            if code in seen_codes:
+                reason = f'设备编号重复（{code}）'
+                logger.info(f"[未录入设备] 第{row_idx}行录入失败：客户名称={name}，{reason}")
+                failed.append((row_idx, code, reason))
+                continue
+            seen_codes.add(code)
+
             raw_time = row.get(col_time) if col_time else None
             if raw_time is None or (isinstance(raw_time, float) and pd.isna(raw_time)):
                 install_time = ''
@@ -536,13 +583,24 @@ def load_config():
                 barrel_val = 1
             owner_val = _safe_str(row.get(col_owner) if col_owner else None, '中润') or '中润'
             devices.append({
-                '客户名称': _safe_str(row.get(col_name) if col_name else None),
+                '客户名称': name,
                 '设备编号': code,
                 '安装时间': install_time,
                 '安装地点': _safe_str(row.get(col_loc) if col_loc else None),
                 '桶数': barrel_val,
                 '设备归属': owner_val,
             })
+
+        if failed:
+            detail_lines = [f"  第{r}行 | 设备编号={c} | 原因：{rs}" for r, c, rs in failed]
+            detail_str = '\n'.join(detail_lines)
+            logger.info(f"[未录入设备] 以下 {len(failed)} 条录入失败（校验不通过）:\n{detail_str}")
+            send_feishu_alert(
+                'warning',
+                f'补录设备校验失败，共 {len(failed)} 条，请检查配置文件"未录入系统设备" Sheet',
+                detail_str
+            )
+
         return devices
 
     # 4. 解析排除规则
@@ -557,44 +615,110 @@ def load_config():
         col_codes = _find_col(df_settings.columns, '排除设备编码')
         logger.info(f"[配置] 匹配列名 → 排除客户ID='{col_cid}', 排除设备编码='{col_codes}'")
 
-        for _, row in df_settings.iterrows():
-            # 读取客户ID
+        excl_failed  = []       # 校验失败条目：(行号, 客户ID或'-', 原因)
+        seen_excl    = set()    # 批次内重复检测，key=(cid, code) 或 (cid, '')
+
+        for row_idx, (_, row) in enumerate(df_settings.iterrows(), start=2):
+            # 排除客户ID 必填校验
             cid_raw = row.get(col_cid) if col_cid else None
             if cid_raw is None or (isinstance(cid_raw, float) and pd.isna(cid_raw)):
+                excl_failed.append((row_idx, '-', '排除客户ID为空'))
+                logger.info(f"[排除规则] 第{row_idx}行解析失败：排除客户ID为空")
                 continue
             cid = str(cid_raw).strip()
             if not cid or cid == 'nan':
+                excl_failed.append((row_idx, '-', '排除客户ID为空'))
+                logger.info(f"[排除规则] 第{row_idx}行解析失败：排除客户ID为空")
                 continue
             if '.' in cid:
                 cid = cid.split('.')[0]
 
-            # 读取排除设备编码（用 pd.isna 避免 NaN → str → 'nan' 的歧义）
+            # 读取排除设备编码（可为空，空表示排除该客户全部设备）
             codes_raw_val = row.get(col_codes) if col_codes else None
             if codes_raw_val is None or (isinstance(codes_raw_val, float) and pd.isna(codes_raw_val)):
                 codes_raw = ''
             else:
                 codes_raw = str(codes_raw_val).strip()
-
             codes = [c.strip() for c in codes_raw.split(',') if c.strip()] if codes_raw else []
+
+            # 重复校验：同一客户ID + 相同设备编码组合不可重复配置
+            dedup_key = (cid, tuple(sorted(codes)))
+            if dedup_key in seen_excl:
+                reason = f'排除规则重复（客户ID={cid}，设备编码={codes_raw or "（全部）"}）'
+                excl_failed.append((row_idx, cid, reason))
+                logger.info(f"[排除规则] 第{row_idx}行解析失败：{reason}")
+                continue
+            seen_excl.add(dedup_key)
+
             logger.info(f"[配置] 排除规则: customer_id={cid}, 设备编码='{codes_raw}' → {codes or '（该客户全部设备）'}")
             exclusion_rules.append({'customer_id': cid, 'device_codes': codes})
+
+        if excl_failed:
+            detail_lines = [f"  第{r}行 | 客户ID={c} | 原因：{rs}" for r, c, rs in excl_failed]
+            detail_str = '\n'.join(detail_lines)
+            logger.info(f"[排除规则] 以下 {len(excl_failed)} 条解析失败:\n{detail_str}")
+            send_feishu_alert(
+                'warning',
+                f'排除客户配置校验失败，共 {len(excl_failed)} 条，请检查配置文件"排除客户设置" Sheet',
+                detail_str
+            )
 
     # 5. 解析计量客户ID集合
     metered_customer_ids = set()
     if not df_metered_config.empty:
         df_metered_config.columns = df_metered_config.columns.str.strip()
         if '计量客户ID' in df_metered_config.columns:
-            for raw in df_metered_config['计量客户ID'].dropna():
+            metered_failed = []   # 校验失败条目：(行号, 原因)
+            seen_cids = set()     # 批次内重复检测
+
+            for row_idx, raw in enumerate(df_metered_config['计量客户ID'], start=2):
+                # 空值校验
+                if raw is None or (isinstance(raw, float) and pd.isna(raw)):
+                    metered_failed.append((row_idx, '-', '计量客户ID为空'))
+                    logger.info(f"[计量客户] 第{row_idx}行解析失败：计量客户ID为空")
+                    continue
                 cid = str(raw).strip()
+                if not cid or cid == 'nan':
+                    metered_failed.append((row_idx, '-', '计量客户ID为空'))
+                    logger.info(f"[计量客户] 第{row_idx}行解析失败：计量客户ID为空")
+                    continue
                 if '.' in cid:
                     cid = cid.split('.')[0]
-                if cid and cid != 'nan':
-                    metered_customer_ids.add(cid)
+                # 重复校验
+                if cid in seen_cids:
+                    metered_failed.append((row_idx, cid, f'计量客户ID重复（{cid}）'))
+                    logger.info(f"[计量客户] 第{row_idx}行解析失败：计量客户ID重复（{cid}）")
+                    continue
+                seen_cids.add(cid)
+                metered_customer_ids.add(cid)
+
+            if metered_failed:
+                detail_lines = [f"  第{r}行 | 客户ID={c} | 原因：{rs}" for r, c, rs in metered_failed]
+                detail_str = '\n'.join(detail_lines)
+                logger.info(f"[计量客户] 以下 {len(metered_failed)} 条解析失败:\n{detail_str}")
+                send_feishu_alert(
+                    'warning',
+                    f'计量客户配置校验失败，共 {len(metered_failed)} 条，请检查配置文件"计量客户设置" Sheet',
+                    detail_str
+                )
+
+            logger.info(f"[计量客户] 解析完成，有效客户ID {len(metered_customer_ids)} 个: {sorted(metered_customer_ids)}")
+        else:
+            logger.info("[计量客户] 未找到'计量客户ID'列，跳过解析（请确认列标题正确）")
 
     # 6. 解析未录入系统设备（补录设备列表）
     supplemental_devices = _parse_unreg_df(df_unregistered)
     if not df_unregistered.empty:
         logger.info(f"未录入系统设备配置加载完成，共 {len(supplemental_devices)} 条")
+
+    # 6a. 桶数/归属校验：补录设备允许为空，其余设备不允许
+    _supp_code_set = {dev['设备编号'] for dev in supplemental_devices}
+    _non_supp_barrel_owner = [(r, c, rs) for r, c, rs in _dev_barrel_owner_issues if c not in _supp_code_set]
+    if _non_supp_barrel_owner:
+        _detail_lines = [f"  第{r}行 | 设备编号={c} | {rs}" for r, c, rs in _non_supp_barrel_owner]
+        _detail = '\n'.join(_detail_lines)
+        logger.info(f"[设备配置] 以下 {len(_non_supp_barrel_owner)} 条非补录设备桶数或设备归属为空:\n{_detail}")
+        send_feishu_alert('warning', f'设备配置校验失败：{len(_non_supp_barrel_owner)} 条非补录设备桶数或设备归属为空，请检查"设备配置" Sheet', _detail)
 
     if loaded_source:
         logger.info(f"配置加载完成 (来源: {loaded_source}，排除规则 {len(exclusion_rules)} 条，计量客户 {len(metered_customer_ids)} 个，补录设备 {len(supplemental_devices)} 台)")
@@ -615,7 +739,7 @@ def process_data(df):
 
     total_raw = len(df)
 
-    # 2. 过滤掉无客户关联的设备（customer_name 为 NULL/空）
+    # 2. 过滤掉无客户关联的设备（双保险：SQL 层已过滤，此处兜底应对类型转换边界情况）
     # MySQL varchar NULL → Python None → str(None) = 'None'；numpy NaN → str = 'nan'，统一替换为空串后过滤
     if 'customer_name' in df.columns:
         df['customer_name'] = df['customer_name'].astype(str).str.strip().replace({'nan': '', 'None': ''})
@@ -630,22 +754,83 @@ def process_data(df):
         df['customer_id'] = df['customer_id'].astype(str).str.strip()
         df['customer_id'] = df['customer_id'].apply(lambda x: x.split('.')[0] if '.' in x else x)
 
+    # 2b. 设备配置 — DB匹配校验 & 总数核对
+    # 在排除规则执行前完成，此时 df 代表数据库中全部有效设备（正常+排除+计量）
+    if device_config:
+        _db_codes    = set(df['device_code'].astype(str).str.strip())
+        _cfg_codes   = set(device_config.keys())
+        _supp_codes  = {dev['设备编号'] for dev in supplemental_devices}
+        _supp_not_db = _supp_codes - _db_codes   # 真正不在DB的补录设备
+
+        # C. 非补录设备编码DB匹配校验
+        _not_in_db = (_cfg_codes - _supp_codes) - _db_codes
+        if _not_in_db:
+            _detail = '\n'.join(f"  设备编号={c}" for c in sorted(_not_in_db))
+            logger.info(f"[设备配置] 以下 {len(_not_in_db)} 个非补录设备编号在数据库中无匹配，配置可能已失效:\n{_detail}")
+            send_feishu_alert(
+                'warning',
+                f'设备配置中 {len(_not_in_db)} 个设备编号在数据库中无匹配，请确认编号是否正确',
+                _detail
+            )
+
+        # D. 总数核对：设备配置总数 = 数据库设备数(含排除/计量) + 补录不在DB设备数
+        _expected = len(_db_codes) + len(_supp_not_db)
+        _actual   = len(_cfg_codes)
+        if _actual != _expected:
+            _db_not_in_cfg = _db_codes - _cfg_codes
+            _lines = [
+                f"设备配置总数: {_actual} 台，预期: {_expected} 台",
+                f"  数据库设备(正常+排除+计量): {len(_db_codes)} 台",
+                f"  补录设备(不在DB): {len(_supp_not_db)} 台",
+            ]
+            if _not_in_db:
+                _lines.append(f"  配置中无效编号(非补录且不在DB): {sorted(_not_in_db)} 共 {len(_not_in_db)} 台")
+            if _db_not_in_cfg:
+                _sample = sorted(_db_not_in_cfg)[:10]
+                _lines.append(f"  DB设备未录入配置(将用默认桶数/归属): {_sample}{'...' if len(_db_not_in_cfg) > 10 else ''} 共 {len(_db_not_in_cfg)} 台")
+            _detail = '\n'.join(_lines)
+            logger.info(f"[设备配置] 总数核对不符:\n{_detail}")
+            send_feishu_alert(
+                'warning',
+                f'设备配置总数核对不符：配置 {_actual} 台，预期 {_expected} 台（数据库 {len(_db_codes)} + 补录 {len(_supp_not_db)}）',
+                _detail
+            )
+
     # 3. 按排除规则过滤（基于客户ID，精准排除）
     if exclusion_rules and 'customer_id' in df.columns:
         mask = pd.Series(False, index=df.index)
+        # 标准化 device_code，防止数据库值含首尾空格导致 isin 匹配失败
+        device_code_stripped = df['device_code'].astype(str).str.strip()
+        unmatched_rules = []   # 未命中数据库的规则
         for rule in exclusion_rules:
             cid, codes = rule['customer_id'], rule['device_codes']
             if codes:
                 # 仅排除该客户下指定的设备编号（旧设备替换场景）
-                mask |= (df['customer_id'] == cid) & df['device_code'].isin(codes)
+                rule_mask = (df['customer_id'] == cid) & device_code_stripped.isin(codes)
+                mask |= rule_mask
+                # 按每个设备编码逐一检测是否命中
+                unmatched_codes = [c for c in codes if not ((df['customer_id'] == cid) & (device_code_stripped == c)).any()]
+                if unmatched_codes:
+                    unmatched_rules.append(f"客户ID={cid}，设备编码={','.join(unmatched_codes)} 在数据库中无匹配")
             else:
                 # 排除该客户的全部设备
-                mask |= (df['customer_id'] == cid)
+                rule_mask = (df['customer_id'] == cid)
+                mask |= rule_mask
+                if not rule_mask.any():
+                    unmatched_rules.append(f"客户ID={cid} 在数据库中无匹配设备")
         removed_by_rules = df[mask][['customer_id', 'customer_name', 'device_code']].values.tolist()
         if removed_by_rules:
             logger.info(f"[诊断] 排除规则命中的设备（客户ID | 客户名称 | 设备编号）:")
             for item in removed_by_rules:
                 logger.info(f"  -> customer_id={item[0]}  {item[1]}  {item[2]}")
+        if unmatched_rules:
+            detail_str = '\n'.join(f"  {r}" for r in unmatched_rules)
+            logger.info(f"[排除规则] 以下规则在数据库中无匹配，排除未生效:\n{detail_str}")
+            send_feishu_alert(
+                'warning',
+                f'排除客户规则在数据库中无匹配，共 {len(unmatched_rules)} 条，请确认客户ID或设备编码是否正确',
+                detail_str
+            )
         df = df[~mask].copy()
     logger.info(f"排除规则过滤后剩余: {len(df)} 台")
 
@@ -687,6 +872,17 @@ def process_data(df):
     # 8. 在列重命名前，按 customer_id 筛出计量客户子集
     if metered_customer_ids and 'customer_id' in df.columns:
         df_metered = df[df['customer_id'].isin(metered_customer_ids)].copy()
+        # 校验：配置中的计量客户ID是否在数据库中匹配到数据
+        matched_cids = set(df_metered['customer_id'].unique())
+        unmatched = metered_customer_ids - matched_cids
+        if unmatched:
+            detail_str = '、'.join(sorted(unmatched))
+            logger.info(f"[计量客户] 以下客户ID在数据库中无匹配设备，请确认ID是否正确: {detail_str}")
+            send_feishu_alert(
+                'warning',
+                f'计量客户ID在数据库中无匹配设备，共 {len(unmatched)} 个，请检查配置',
+                f'未匹配的客户ID: {detail_str}'
+            )
     else:
         df_metered = pd.DataFrame()
 
@@ -713,10 +909,12 @@ def process_data(df):
     if supplemental_devices:
         existing_codes = set(df_out['设备编号'].tolist())
         supp_rows = []
+        supp_found_in_db = []   # 补录设备编号已出现在DB报表中，需提醒维护人员清理
         for dev in supplemental_devices:
             code = dev.get('设备编号', '')
             if code in existing_codes:
-                logger.info(f'[未录入设备] 设备 {code} 已在数据库中，跳过补录（请从配置文件"未录入系统设备"删除该记录）')
+                logger.info(f'[未录入设备] 设备 {code} 已在数据库中，已按正常设备处理，请从配置文件"未录入系统设备" Sheet 中删除该记录')
+                supp_found_in_db.append(code)
                 continue
             supp_rows.append({
                 '客户名称': dev.get('客户名称', ''),
@@ -729,6 +927,15 @@ def process_data(df):
                 '安装时间': dev.get('安装时间', ''),
                 '安装地点': dev.get('安装地点', ''),
             })
+            logger.info(f"[未录入设备] 补录成功：客户名称={dev.get('客户名称', '')}，设备编号={code}，"
+                        f"安装时间={dev.get('安装时间', '') or '未填写'}，安装地点={dev.get('安装地点', '') or '未填写'}")
+        if supp_found_in_db:
+            _detail = '、'.join(supp_found_in_db)
+            send_feishu_alert(
+                'warning',
+                f'补录设备已入库，请及时清理配置，共 {len(supp_found_in_db)} 台',
+                f'以下设备编号已在数据库中正常存在，已按正常设备处理，请从"未录入系统设备" Sheet 中删除：{_detail}'
+            )
         if supp_rows:
             df_supp = pd.DataFrame(supp_rows)
             df_out_no_seq = df_out.drop(columns=['序号'])
@@ -986,7 +1193,7 @@ if __name__ == "__main__":
     print("=== 机器人运行中 ===")
 
     # 启动时立即执行一次
-    daily_task() #仅限程序启动时测试使用
+    # daily_task()  # 仅限程序启动时测试使用（部署前请注释此行，防止双次执行）
 
     # 注册每日 08:00 定时任务
     # schedule 以"距上次执行是否已满 24 小时"判断是否触发。
