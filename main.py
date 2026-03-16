@@ -972,29 +972,34 @@ def generate_excel_with_format(df, filename, df_metered=None):
 
     # === 颜色 ===
     C_HEADER_BG = '#2E75B6'   # 中蓝（表头背景）
+    C_TITLE_BG  = '#1F4E79'   # 深蓝（标题背景）
     C_BORDER    = '#B8D4E8'   # 浅蓝边框
     C_ROW_EVEN  = '#F0F5FA'   # 偶数行：冷灰蓝（柔和、专业）
+    FONT        = '微软雅黑'
 
-    # 需要居中显示的列
-    CENTER_COLS = {'序号', '库存(%)', '桶数', '设备归属', '网络同步'}
+    # 居中列：数字/状态类；其余文本列左对齐
+    CENTER_COLS = {'序号', '库存(%)', '桶数', '设备归属', '网络同步', '安装时间'}
+    LEFT_COLS   = {'客户名称', '设备编号', '油品型号', '安装地点'}
 
     # === 格式对象 ===
     title_fmt = workbook.add_format({
-        'bold': True, 'font_size': 14,
+        'bold': True, 'font_name': FONT, 'font_size': 16,
         'align': 'center', 'valign': 'vcenter',
-        'font_color': '#1F4E79',              # 深蓝文字，无背景色
+        'bg_color': C_TITLE_BG, 'font_color': '#FFFFFF',
+        'bottom': 2, 'bottom_color': C_HEADER_BG,   # 加粗底边框强化层次感
     })
     header_fmt = workbook.add_format({
-        'bold': True, 'font_size': 10,
+        'bold': True, 'font_name': FONT, 'font_size': 11,
         'align': 'center', 'valign': 'vcenter',
         'bg_color': C_HEADER_BG, 'font_color': '#FFFFFF',
         'border': 1, 'border_color': '#1F4E79',
     })
-    row_odd_fmt  = workbook.add_format({'bg_color': '#FFFFFF',  'border': 1, 'border_color': C_BORDER})
-    row_even_fmt = workbook.add_format({'bg_color': C_ROW_EVEN, 'border': 1, 'border_color': C_BORDER})
+    row_odd_fmt  = workbook.add_format({'font_name': FONT, 'font_size': 10, 'bg_color': '#FFFFFF',  'border': 1, 'border_color': C_BORDER, 'valign': 'vcenter'})
+    row_even_fmt = workbook.add_format({'font_name': FONT, 'font_size': 10, 'bg_color': C_ROW_EVEN, 'border': 1, 'border_color': C_BORDER, 'valign': 'vcenter'})
 
-    # 数据单元格：仅设置居中对齐（背景/边框由条件格式负责）
-    data_center_fmt = workbook.add_format({'align': 'center', 'valign': 'vcenter'})
+    # 数据单元格对齐格式（背景/边框由条件格式负责，此处只设字体+对齐）
+    data_center_fmt = workbook.add_format({'font_name': FONT, 'font_size': 10, 'align': 'center', 'valign': 'vcenter'})
+    data_left_fmt   = workbook.add_format({'font_name': FONT, 'font_size': 10, 'align': 'left',   'valign': 'vcenter'})
 
     # 条件格式（库存 + 网络同步）—— 带边框，优先级高于行底色
     inv_green_fmt  = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100', 'border': 1, 'border_color': C_BORDER, 'align': 'center'})
@@ -1007,8 +1012,8 @@ def generate_excel_with_format(df, filename, df_metered=None):
 
     # 各列宽度（列名 → 字符宽度）
     col_widths = {
-        '序号': 5, '客户名称': 22, '设备编号': 19,
-        '油品型号': 18, '库存(%)': 9, '桶数': 6,
+        '序号': 5, '客户名称': 27, '设备编号': 19,
+        '油品型号': 23, '库存(%)': 9, '桶数': 6,
         '设备归属': 10, '网络同步': 10, '安装时间': 12, '安装地点': 22,
     }
 
@@ -1019,11 +1024,11 @@ def generate_excel_with_format(df, filename, df_metered=None):
         last_data_row = 1 + len(sheet_df)   # 0-indexed：row0=标题 row1=表头 row2..=数据
 
         # ── 标题行（row 0）──
-        ws.set_row(0, 36)
+        ws.set_row(0, 45)
         ws.merge_range(0, 0, 0, last_col, sheet_title, title_fmt)
 
         # ── 表头行（row 1，覆盖 pandas 写入的默认格式）──
-        ws.set_row(1, 22)
+        ws.set_row(1, 26)
         for col_num, col_name in enumerate(sheet_df.columns.values):
             ws.write(1, col_num, col_name, header_fmt)
 
@@ -1031,13 +1036,17 @@ def generate_excel_with_format(df, filename, df_metered=None):
         for col_num, col_name in enumerate(sheet_df.columns.values):
             ws.set_column(col_num, col_num, col_widths.get(col_name, 12))
 
-        # ── 居中列：逐行重写数据单元格以应用 center 对齐
+        # ── 数据行行高 + 对齐格式
+        # 居中列：数字/状态类；左对齐列：长文本类
         # （Excel 条件格式无法修改对齐方式，只能通过单元格格式设置）──
+        for row_num in range(len(sheet_df)):
+            ws.set_row(row_num + 2, 20)
         for col_num, col_name in enumerate(sheet_df.columns.values):
-            if col_name in CENTER_COLS:
+            if col_name in CENTER_COLS or col_name in LEFT_COLS:
+                fmt = data_center_fmt if col_name in CENTER_COLS else data_left_fmt
                 for row_num in range(len(sheet_df)):
                     val = sheet_df.iloc[row_num, col_num]
-                    ws.write(row_num + 2, col_num, val, data_center_fmt)
+                    ws.write(row_num + 2, col_num, val, fmt)
 
         # ── 冻结标题+表头两行 ──
         ws.freeze_panes(2, 0)
