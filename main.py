@@ -13,7 +13,7 @@ from sqlalchemy import create_engine
 
 logger = logging.getLogger('daily_report')
 
-__version__ = '1.0.1'
+__version__ = '1.0.2'
 
 # ================= 配置区域 =================
 # 敏感凭据优先从环境变量读取，未设置时使用下方默认值。
@@ -909,17 +909,32 @@ def process_data(df):
     # 8. 在列重命名前，按 customer_id 筛出计量客户子集
     if metered_customer_ids and 'customer_id' in df.columns:
         df_metered = df[df['customer_id'].isin(metered_customer_ids)].copy()
-        # 校验：配置中的计量客户ID是否在数据库中匹配到数据
+        # 校验：计量客户ID未命中时，区分「被排除规则过滤」与「数据库真正无记录」两种情形
+        # 避免误导维护人员：前者应检查排除规则配置，后者才需要核对数据库
         matched_cids = set(df_metered['customer_id'].unique())
         unmatched = metered_customer_ids - matched_cids
         if unmatched:
-            detail_str = '、'.join(sorted(unmatched))
-            logger.info(f"[计量客户] 以下客户ID在数据库中无匹配设备，请确认ID是否正确: {detail_str}")
-            send_feishu_alert(
-                'warning',
-                f'计量客户ID在数据库中无匹配设备，共 {len(unmatched)} 个，请检查配置',
-                f'未匹配的客户ID: {detail_str}'
-            )
+            # 全量排除（device_codes 为空）的客户ID集合
+            _excl_all_cids = {rule['customer_id'] for rule in exclusion_rules if not rule.get('device_codes')}
+            filtered_by_excl = unmatched & _excl_all_cids   # 被排除规则整体过滤
+            truly_unmatched  = unmatched - _excl_all_cids   # 数据库真正无匹配
+            if filtered_by_excl:
+                detail_str = '、'.join(sorted(filtered_by_excl))
+                logger.info(f"[计量客户] 以下客户ID被排除规则整体过滤，计量Sheet中无对应数据，"
+                            f"请检查排除客户设置是否与计量客户设置冲突: {detail_str}")
+                send_feishu_alert(
+                    'warning',
+                    f'计量客户与排除规则冲突，共 {len(filtered_by_excl)} 个客户ID，计量Sheet无数据',
+                    f'以下计量客户ID被排除规则整体过滤，请检查配置冲突: {detail_str}'
+                )
+            if truly_unmatched:
+                detail_str = '、'.join(sorted(truly_unmatched))
+                logger.info(f"[计量客户] 以下客户ID在数据库中无匹配设备，请确认ID是否正确: {detail_str}")
+                send_feishu_alert(
+                    'warning',
+                    f'计量客户ID在数据库中无匹配设备，共 {len(truly_unmatched)} 个，请检查配置',
+                    f'未匹配的客户ID: {detail_str}'
+                )
     else:
         df_metered = pd.DataFrame()
 
