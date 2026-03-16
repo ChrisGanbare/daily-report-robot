@@ -1067,6 +1067,16 @@ def generate_excel_with_format(df, filename, df_metered=None):
         ws.set_row(1, 26)
         for col_num, col_name in enumerate(sheet_df.columns.values):
             ws.write(1, col_num, col_name, header_fmt)
+            if col_name == '网络同步':
+                ws.write_comment(1, col_num,
+                    '【网络同步状态说明】\n'
+                    '✅ online       — 24h 内正常上报\n'
+                    '⚠️ offline_warn — 24~72h 未上报，短期预警\n'
+                    '❌ offline      — 超过 72h 未上报，长期失联\n'
+                    '🔘 never_synced — 从未上报，设备未激活\n'
+                    '⬛ disabled     — 已停用',
+                    {'x_scale': 1.8, 'y_scale': 1.6, 'font_size': 10}
+                )
 
         # ── 列宽 ──
         for col_num, col_name in enumerate(sheet_df.columns.values):
