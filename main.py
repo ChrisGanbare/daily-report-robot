@@ -480,12 +480,19 @@ def load_config():
             logger.info(f"本地配置文件读取失败: {e}")
             send_feishu_alert('warning', '本地配置文件读取失败，设备配置将使用默认值', str(e))
 
+    def _row_blank(row):
+        """判断一行是否完全空白（所有单元格均为 NaN 或空串），用于跳过预留空行"""
+        return all(v is None or (isinstance(v, float) and pd.isna(v)) or str(v).strip() in ('', 'nan')
+                   for v in row)
+
     # 3. 解析设备配置
     _dev_empty_code_rows = []       # 设备编号为空的行号
     _dev_barrel_owner_issues = []   # (行号, 设备编号, 缺失字段描述) — 供后续过滤补录设备后告警
     if not df_devices.empty:
         df_devices.columns = df_devices.columns.str.strip()
         for _row_idx, (_, row) in enumerate(df_devices.iterrows(), start=2):
+            if _row_blank(row):
+                continue  # 完全空白的预留行，静默跳过
             _code_raw = row.get('设备编号')
             code = '' if (_code_raw is None or (isinstance(_code_raw, float) and pd.isna(_code_raw))) else str(_code_raw).strip()
             if not code or code == 'nan':
@@ -548,6 +555,8 @@ def load_config():
         seen_codes = set()    # 批次内已出现的设备编号，用于重复检测
 
         for row_idx, (_, row) in enumerate(df.iterrows(), start=2):  # start=2：Excel 第1行为表头
+            if _row_blank(row):
+                continue  # 完全空白的预留行，静默跳过
             code_val = row.get(col_code)
             code = '' if (code_val is None or (isinstance(code_val, float) and pd.isna(code_val))) else str(code_val).strip()
             if not code or code == 'nan':
@@ -619,6 +628,8 @@ def load_config():
         seen_excl    = set()    # 批次内重复检测，key=(cid, code) 或 (cid, '')
 
         for row_idx, (_, row) in enumerate(df_settings.iterrows(), start=2):
+            if _row_blank(row):
+                continue  # 完全空白的预留行，静默跳过
             # 排除客户ID 必填校验
             cid_raw = row.get(col_cid) if col_cid else None
             if cid_raw is None or (isinstance(cid_raw, float) and pd.isna(cid_raw)):
@@ -671,8 +682,11 @@ def load_config():
             metered_failed = []   # 校验失败条目：(行号, 原因)
             seen_cids = set()     # 批次内重复检测
 
-            for row_idx, raw in enumerate(df_metered_config['计量客户ID'], start=2):
+            for row_idx, (_, row) in enumerate(df_metered_config.iterrows(), start=2):
+                if _row_blank(row):
+                    continue  # 完全空白的预留行，静默跳过
                 # 空值校验
+                raw = row.get('计量客户ID')
                 if raw is None or (isinstance(raw, float) and pd.isna(raw)):
                     metered_failed.append((row_idx, '-', '计量客户ID为空'))
                     logger.info(f"[计量客户] 第{row_idx}行解析失败：计量客户ID为空")
@@ -1209,7 +1223,7 @@ if __name__ == "__main__":
     print("=== 机器人运行中 ===")
 
     # 启动时立即执行一次
-    # daily_task()  # 仅限程序启动时测试使用（部署前请注释此行，防止双次执行）
+    daily_task()  # 仅限程序启动时测试使用（部署前请注释此行，防止双次执行）
 
     # 注册每日 08:00 定时任务
     # schedule 以"距上次执行是否已满 24 小时"判断是否触发。
