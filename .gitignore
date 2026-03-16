@@ -3,3 +3,9 @@
 __pycache__/
 *.pyc
 *.log
+
+# 凭据文件 —— 绝对不能提交
+.env
+
+# IDE
+.vscode/

@@ -10,31 +10,31 @@ import os
 import urllib.parse
 import re
 from sqlalchemy import create_engine
+from dotenv import load_dotenv
+
+# 启动时加载 .env 文件（若存在）。生产环境可直接设置系统环境变量，无需 .env 文件。
+load_dotenv()
 
 logger = logging.getLogger('daily_report')
 
 __version__ = '1.0.2'
 
 # ================= 配置区域 =================
-# 敏感凭据优先从环境变量读取，未设置时使用下方默认值。
-# 生产环境建议通过系统环境变量或 .env 文件注入，避免凭据留存于代码中。
-# 设置示例（Windows）：
-#   set DB_PASSWORD=your_password
-#   set WEBHOOK_KEY=your_key
+# 所有凭据从环境变量读取（优先）或 .env 文件加载（本地开发）。
+# 部署时复制 .env.example 为 .env 并填入真实值，或直接设置系统环境变量。
 
 # 1. 数据库配置
 DB_CONFIG = {
-    'host':    os.environ.get('DB_HOST',     '8.139.83.130'),
-    'port':    int(os.environ.get('DB_PORT', '3306')),
-    'user':    os.environ.get('DB_USER',     'query_zr'),
-    'password': os.environ.get('DB_PASSWORD', 'ZRYLPass220609!'),
-    'db':      os.environ.get('DB_NAME',     'oil'),
-    'charset': 'utf8mb4'
+    'host':     os.environ.get('DB_HOST',     ''),
+    'port':     int(os.environ.get('DB_PORT', '3306')),
+    'user':     os.environ.get('DB_USER',     ''),
+    'password': os.environ.get('DB_PASSWORD', ''),
+    'db':       os.environ.get('DB_NAME',     'oil'),
+    'charset':  'utf8mb4'
 }
 
 # 2. 机器人 Webhook (企业微信)
-# 完整 URL 也可通过 WEBHOOK_URL 环境变量整体覆盖
-_webhook_key = os.environ.get('WEBHOOK_KEY', '928f052d-7b3a-4137-bb54-8f1528da84e0')
+_webhook_key = os.environ.get('WEBHOOK_KEY', '')
 WEBHOOK_URL = os.environ.get(
     'WEBHOOK_URL',
     f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={_webhook_key}"
@@ -45,7 +45,7 @@ WEBHOOK_URL = os.environ.get(
 #   - 腾讯文档：直接填分享链接，程序自动转换为导出链接
 #   - 飞书文档：填分享链接 + 配置下方 FEISHU_APP_ID / FEISHU_APP_SECRET
 #   - 金山文档/WPS：在文档中「下载 → xlsx」获取直链后填入
-CONFIG_EXCEL_URL = os.environ.get('CONFIG_EXCEL_URL', "https://hcnp900tw673.feishu.cn/sheets/LwDxsQjMxhB2V6tD7LHcOTj5nIh?from=from_copylink")
+CONFIG_EXCEL_URL = os.environ.get('CONFIG_EXCEL_URL', '')
 
 # 飞书开放平台 API 凭据（仅飞书文档需要，其他平台留空即可）
 # 获取步骤：
@@ -53,16 +53,16 @@ CONFIG_EXCEL_URL = os.environ.get('CONFIG_EXCEL_URL', "https://hcnp900tw673.feis
 #   2. 进入「权限管理」→ 搜索并开启 sheets:spreadsheet:readonly
 #   3. 进入「版本管理与发布」→ 申请发布（审核通过后生效）
 #   4. 在飞书电子表格右上角「分享」→ 添加该应用为协作者（或设为组织内可查看）
-#   5. 将 App ID 和 App Secret 填入下方（或设为对应环境变量）
-FEISHU_APP_ID     = os.environ.get('FEISHU_APP_ID',     'cli_a939789876385bc0')
-FEISHU_APP_SECRET = os.environ.get('FEISHU_APP_SECRET', 'hoiNNOoVnSBBA0jkDNIwGlH58byL5sc0')
+#   5. 将 App ID 和 App Secret 填入 .env 文件
+FEISHU_APP_ID     = os.environ.get('FEISHU_APP_ID',     '')
+FEISHU_APP_SECRET = os.environ.get('FEISHU_APP_SECRET', '')
 
 # 方案B：本地文件配置 (当在线表格未配置或下载失败时使用)
 CONFIG_LOCAL_FILE = os.environ.get('CONFIG_LOCAL_FILE', 'device_config.xlsx')
 
 # 5. 飞书告警 Webhook（填入飞书群机器人 Webhook 地址，留空则不推送告警）
 # 用于推送两类告警：① 服务异常/终止；② 非致命运行警告（如切换本地配置等）
-FEISHU_ALERT_WEBHOOK = os.environ.get('FEISHU_ALERT_WEBHOOK', 'https://open.feishu.cn/open-apis/bot/v2/hook/96f76657-dd2c-4a10-8729-25c9a6821e77')
+FEISHU_ALERT_WEBHOOK = os.environ.get('FEISHU_ALERT_WEBHOOK', '')
 
 
 # =======================================================
@@ -1273,7 +1273,7 @@ if __name__ == "__main__":
     print("=== 机器人运行中 ===")
 
     # 启动时立即执行一次
-    daily_task()  # 仅限程序启动时测试使用（部署前请注释此行，防止双次执行）
+    # daily_task()  # 仅限程序启动时测试使用（部署前请注释此行，防止双次执行）
 
     # 注册每日 08:00 定时任务
     # schedule 以"距上次执行是否已满 24 小时"判断是否触发。

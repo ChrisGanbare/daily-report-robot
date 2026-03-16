@@ -5,3 +5,4 @@ pymysql
 openpyxl
 xlsxwriter
 schedule
+python-dotenv
