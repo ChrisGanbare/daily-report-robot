@@ -1233,32 +1233,27 @@ def send_to_robot(filename):
         send_feishu_alert('warning', '报表发送异常', str(e))
 
 
-def clean_old_files(keep=10):
-    """清理旧的报表和日志文件，按修改时间排序，超出保留数量时先删最旧的。"""
-    logger.info(f"开始清理旧报表及日志文件（每类最多保留 {keep} 份）...")
+def clean_old_files(keep_days=10):
+    """清理旧的报表和日志文件，删除修改时间超过 keep_days 天的文件（先进先出）。"""
+    logger.info(f"开始清理旧报表及日志文件（保留最近 {keep_days} 天）...")
     try:
         cwd = os.path.abspath('.')
-        reports, logs = [], []
+        cutoff = time.time() - keep_days * 86400   # 10天前的时间戳
+        deleted = []
         for f in os.listdir(cwd):
             path = os.path.join(cwd, f)
             if not os.path.isfile(path):
                 continue
-            mtime = os.path.getmtime(path)
-            if f.endswith('.xlsx') and '智能油库油量统计表' in f:
-                reports.append((mtime, path))
-            elif f.endswith('.log') and '智能油库运行日志' in f:
-                logs.append((mtime, path))
-
-        deleted = []
-        for group in (reports, logs):
-            group.sort()                    # 升序：最旧在前
-            to_delete = group[:-keep] if len(group) > keep else []
-            for _, path in to_delete:
+            is_report = f.endswith('.xlsx') and '智能油库油量统计表' in f
+            is_log    = f.endswith('.log')  and '智能油库运行日志'   in f
+            if not (is_report or is_log):
+                continue
+            if os.path.getmtime(path) < cutoff:
                 try:
                     os.remove(path)
-                    deleted.append(os.path.basename(path))
+                    deleted.append(f)
                 except Exception as e:
-                    logger.warning(f"删除文件 {os.path.basename(path)} 失败: {e}")
+                    logger.warning(f"删除文件 {f} 失败: {e}")
 
         if deleted:
             logger.info(f"清理完成，已删除 {len(deleted)} 个旧文件: {', '.join(deleted)}")
