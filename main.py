@@ -914,6 +914,8 @@ def process_data(df):
             import re
             s = re.sub(r'^[\u4e00-\u9fa5]{2,4}省', '', str(loc).strip())
             s = re.sub(r'^[\u4e00-\u9fa5]{2,8}自治区', '', s)
+            # 直辖市：province_name == city_name，去除重复前缀（如"重庆市重庆市长寿区"→"重庆市长寿区"）
+            s = re.sub(r'^([\u4e00-\u9fa5]{2,3}市)\1', r'\1', s)
             return s
         df['location'] = df['location'].apply(_strip_province)
 
@@ -1110,11 +1112,11 @@ def generate_excel_with_format(df, filename, df_metered=None):
         return _SYNC_COLOR_MAP.get(val, ('#D9D9D9', '#666666'))
 
     # 各列宽度（列名 → 字符宽度）
-    # 总计 108 单位，配合 fit_to_pages(1,0) 打印缩放约 97%，近乎原比例适配 A4 竖向
+    # 网络同步 -2 英文，客户名称/油品型号各 +4 汉字（+8），设备编号 +3 英文
     col_widths = {
-        '序号': 4, '客户名称': 18, '设备编号': 15,
-        '油品型号': 14, '库存(%)': 7, '桶数': 5,
-        '设备归属': 7, '网络同步': 13, '安装时间': 10, '安装地点': 15,
+        '序号': 4, '客户名称': 26, '设备编号': 18,
+        '油品型号': 22, '库存(%)': 7, '桶数': 5,
+        '设备归属': 7, '网络同步': 11, '安装时间': 10, '安装地点': 15,
     }
 
     def apply_sheet_format(ws, sheet_df, sheet_title):
