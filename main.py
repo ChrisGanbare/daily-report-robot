@@ -17,7 +17,7 @@ load_dotenv()
 
 logger = logging.getLogger('daily_report')
 
-__version__ = '1.1.2'
+__version__ = '1.1.3'
 
 # ================= 配置区域 =================
 # 所有凭据从环境变量读取（优先）或 .env 文件加载（本地开发）。
