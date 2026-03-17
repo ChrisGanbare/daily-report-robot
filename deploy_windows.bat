@@ -48,7 +48,8 @@ nssm.exe stop    %SERVICE% 2>nul
 nssm.exe remove  %SERVICE% confirm 2>nul
 
 :: Install the service
-for /f "delims=" %%i in ('where %PYTHON%') do set PYTHON_EXE=%%i
+:: Use Python itself to get the exact executable path (handles both "python" and "py -3")
+for /f "delims=" %%i in ('%PYTHON% -c "import sys; print(sys.executable)"') do set PYTHON_EXE=%%i
 nssm.exe install %SERVICE% "%PYTHON_EXE%"
 nssm.exe set     %SERVICE% AppParameters    "%INSTALL_DIR%\main.py"
 nssm.exe set     %SERVICE% AppDirectory     "%INSTALL_DIR%"
@@ -62,12 +63,15 @@ nssm.exe set     %SERVICE% AppRestartDelay  30000
 :: --- It is recommended to inject sensitive credentials via environment variables ---
 :: Uncomment and fill in the real values, then re-run the script.
 :: Or configure them via "nssm.exe edit %SERVICE%" after installation.
-:: nssm.exe set %SERVICE% AppEnvironmentExtra "DB_HOST=127.0.0.1"
-:: nssm.exe set %SERVICE% AppEnvironmentExtra "DB_PASSWORD=your_password"
-:: nssm.exe set %SERVICE% AppEnvironmentExtra "WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY"
-:: nssm.exe set %SERVICE% AppEnvironmentExtra "FEISHU_APP_ID=cli_xxx"
-:: nssm.exe set %SERVICE% AppEnvironmentExtra "FEISHU_APP_SECRET=xxx"
-:: nssm.exe set %SERVICE% AppEnvironmentExtra "FEISHU_ALERT_WEBHOOK=https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+:: All environment variables must be set in a SINGLE command.
+:: Multiple calls to AppEnvironmentExtra will overwrite each other - only the last one survives.
+nssm.exe set %SERVICE% AppEnvironmentExtra ^
+    "DB_HOST=8.139.83.130" ^
+    "DB_PASSWORD=ZRYLPass220609!" ^
+    "WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=928f052d-7b3a-4137-bb54-8f1528da84e0" ^
+    "FEISHU_APP_ID=cli_a939789876385bc0" ^
+    "FEISHU_APP_SECRET=hoiNNOoVnSBBA0jkDNIwGlH58byL5sc0" ^
+    "FEISHU_ALERT_WEBHOOK=https://open.feishu.cn/open-apis/bot/v2/hook/96f76657-dd2c-4a10-8729-25c9a6821e77"
 
 :: Redirect stdout/stderr to logs (optional)
 :: nssm.exe set %SERVICE% AppStdout "%INSTALL_DIR%\stdout.log"
@@ -92,4 +96,3 @@ echo   Remove service: nssm.exe remove %SERVICE% confirm
 echo ==============================
 pause
 endlocal
-pause
