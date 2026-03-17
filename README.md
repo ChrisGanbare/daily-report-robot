@@ -199,7 +199,11 @@ FEISHU_ALERT_WEBHOOK = os.environ.get('FEISHU_ALERT_WEBHOOK', '')
 ### 本地运行
 
 ```bash
+# Windows
 python main.py
+
+# Linux / macOS
+python3 main.py
 ```
 
 启动后每天 08:00 自动触发（若 08:00 后启动，次日 08:00 再触发）。
