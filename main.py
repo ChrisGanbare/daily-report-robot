@@ -17,7 +17,7 @@ load_dotenv()
 
 logger = logging.getLogger('daily_report')
 
-__version__ = '1.0.7'
+__version__ = '1.0.8'
 
 # ================= 配置区域 =================
 # 所有凭据从环境变量读取（优先）或 .env 文件加载（本地开发）。
@@ -1069,10 +1069,11 @@ def generate_excel_with_format(df, filename, df_metered=None):
     sync_gray_fmt   = workbook.add_format({**_I, 'bg_color': '#D9D9D9', 'font_color': '#666666'})
 
     # 各列宽度（列名 → 字符宽度）
+    # 总计 108 单位，配合 fit_to_pages(1,0) 打印缩放约 97%，近乎原比例适配 A4 竖向
     col_widths = {
-        '序号': 5, '客户名称': 27, '设备编号': 19,
-        '油品型号': 23, '库存(%)': 9, '桶数': 6,
-        '设备归属': 10, '网络同步': 10, '安装时间': 12, '安装地点': 22,
+        '序号': 4, '客户名称': 18, '设备编号': 15,
+        '油品型号': 14, '库存(%)': 7, '桶数': 5,
+        '设备归属': 7, '网络同步': 13, '安装时间': 10, '安装地点': 15,
     }
 
     def apply_sheet_format(ws, sheet_df, sheet_title):
@@ -1145,6 +1146,12 @@ def generate_excel_with_format(df, filename, df_metered=None):
 
         # ── 自动筛选（作用在表头行） ──
         ws.autofilter(1, 0, last_data_row, last_col)
+
+        # ── A4 竖向打印设置 ──
+        ws.set_paper(9)                    # A4 纸张
+        ws.fit_to_pages(1, 0)             # 列宽自适应 1 页宽，行数不限
+        ws.set_margins(left=0.4, right=0.4, top=0.5, bottom=0.5)
+        ws.repeat_rows(0, 1)              # 每页重复打印标题行 + 表头行
 
     apply_sheet_format(
         writer.sheets[main_sheet], df,
