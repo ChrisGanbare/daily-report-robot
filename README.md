@@ -229,10 +229,13 @@ deploy_windows.bat
 
 ### 生产环境凭据注入（推荐）
 
-避免密钥硬编码在代码中，通过环境变量注入：
+避免密钥硬编码在代码中，通过环境变量注入。根据部署系统选择对应方式：
+
+#### Linux（systemd 服务）
+
+编辑 systemd 服务文件（`/etc/systemd/system/daily-report-robot.service`），在 `[Service]` 段添加：
 
 ```ini
-# Linux systemd 服务文件 [Service] 段
 Environment="DB_PASSWORD=your_password"
 Environment="WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY"
 Environment="FEISHU_APP_ID=cli_xxx"
@@ -240,7 +243,23 @@ Environment="FEISHU_APP_SECRET=xxx"
 Environment="FEISHU_ALERT_WEBHOOK=https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
 ```
 
-修改后执行 `systemctl daemon-reload && systemctl restart daily-report-robot` 生效。
+保存后执行以下命令使配置生效：
+
+```bash
+systemctl daemon-reload && systemctl restart daily-report-robot
+```
+
+#### Windows（NSSM 服务）
+
+[deploy_windows.bat](deploy_windows.bat) 已内置凭据注入的注释模板（第 62–70 行）。部署前打开脚本，将对应注释行取消注释并填入真实值，然后重新运行脚本即可。
+
+也可在部署完成后通过 NSSM GUI 手动配置：以管理员身份运行命令提示符，执行：
+
+```bat
+nssm.exe edit DailyReportRobot
+```
+
+在弹出窗口的 **Environment** 选项卡中填入各环境变量，保存后重启服务生效。
 
 ---
 
@@ -256,23 +275,48 @@ pip install bump-my-version
 
 ### 发布新版本
 
+#### 选项 1：使用 bump-my-version（推荐新手）
+
 ```bash
+# 1. 升级版本号（选择其一）
+# Linux/macOS:
 bump-my-version bump patch   # 补丁版本：1.1.3 → 1.1.4（Bug 修复）
 bump-my-version bump minor   # 次版本：  1.1.3 → 1.2.0（新功能）
 bump-my-version bump major   # 主版本：  1.1.3 → 2.0.0（破坏性变更）
-```
 
-执行后自动完成：
+# Windows PowerShell（推荐使用 Python 模块方式）:
+python -m bumpversion bump patch   # 补丁版本：1.1.3 → 1.1.4（Bug 修复）
+python -m bumpversion bump minor   # 次版本：  1.1.3 → 1.2.0（新功能）
+python -m bumpversion bump major   # 主版本：  1.1.3 → 2.0.0（破坏性变更）
 
-1. 更新 [main.py](main.py) 中的 `__version__` 字段
-2. 创建 git commit，消息格式：`v{new_version} 版本升级`
-3. 打 git tag：`v{new_version}`
-
-提交和 tag 创建后，手动推送到远程：
-
-```bash
+# 2. 推送到远程仓库（仅此一步，commit 和 tag 已自动完成）
 git push --follow-tags
 ```
+
+**自动完成的内容：**
+- ✅ 更新 [main.py](main.py) 中的 `__version__` 字段
+- ✅ 创建 git commit，消息格式：`v{new_version} 版本升级`
+- ✅ 打 git tag：`v{new_version}`
+- ✅ 推送 commit 和 tag 到远程仓库
+
+#### 选项 2：手动方式（备选方案）
+
+```bash
+# 1. 手动更新版本号
+# 编辑 main.py 第 20 行：__version__ = '1.1.4'
+
+# 2. 提交代码
+git add .
+git commit -m "v1.1.4 版本升级"
+
+# 3. 创建标签
+git tag v1.1.4
+
+# 4. 推送到远程（包含 commit 和 tag）
+git push --follow-tags
+```
+
+**注意：** 手动方式容易出错，建议优先使用 `bump-my-version` 工具。
 
 ---
 
