@@ -17,7 +17,7 @@ load_dotenv()
 
 logger = logging.getLogger('daily_report')
 
-__version__ = '1.0.5'
+__version__ = '1.0.7'
 
 # ================= 配置区域 =================
 # 所有凭据从环境变量读取（优先）或 .env 文件加载（本地开发）。
@@ -1196,7 +1196,7 @@ def send_to_robot(filename):
 
 def clean_old_files(keep=10):
     """清理旧的报表和日志文件，按修改时间排序，超出保留数量时先删最旧的。"""
-    print(f"正在清理旧报表及日志文件（最多保留 {keep} 天）...")
+    logger.info(f"开始清理旧报表及日志文件（每类最多保留 {keep} 份）...")
     try:
         cwd = os.path.abspath('.')
         reports, logs = [], []
@@ -1210,17 +1210,23 @@ def clean_old_files(keep=10):
             elif f.endswith('.log') and '智能油库运行日志' in f:
                 logs.append((mtime, path))
 
+        deleted = []
         for group in (reports, logs):
             group.sort()                    # 升序：最旧在前
             to_delete = group[:-keep] if len(group) > keep else []
             for _, path in to_delete:
                 try:
                     os.remove(path)
-                    print(f"已删除旧文件: {os.path.basename(path)}")
+                    deleted.append(os.path.basename(path))
                 except Exception as e:
-                    print(f"删除文件 {os.path.basename(path)} 失败: {e}")
+                    logger.warning(f"删除文件 {os.path.basename(path)} 失败: {e}")
+
+        if deleted:
+            logger.info(f"清理完成，已删除 {len(deleted)} 个旧文件: {', '.join(deleted)}")
+        else:
+            logger.info("清理完成，无需删除文件")
     except Exception as e:
-        print(f"清理文件过程出错: {e}")
+        logger.warning(f"清理文件过程出错: {e}")
 
 
 def daily_task():
@@ -1228,9 +1234,9 @@ def daily_task():
     today_str = datetime.datetime.now().strftime('%Y年%m月%d日')
     log_file = f"{today_str}智能油库运行日志.log"
 
-    # 先清理旧文件（含旧日志），再初始化本次日志文件
-    clean_old_files()
+    # 先初始化日志，再清理旧文件（清理结果同步写入日志）
     setup_logging(log_file)
+    clean_old_files()
 
     logger.info(f"智能油库日报机器人 v{__version__} 开始执行，日志文件: {log_file}")
 
