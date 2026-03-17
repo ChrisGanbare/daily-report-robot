@@ -1,0 +1,16 @@
+[tool.bumpversion]
+current_version = "1.0.7"
+parse = "(?P<major>\\d+)\\.(?P<minor>\\d+)\\.(?P<patch>\\d+)"
+serialize = ["{major}.{minor}.{patch}"]
+search = "{current_version}"
+replace = "{new_version}"
+commit = true
+tag = true
+tag_name = "v{new_version}"
+commit_args = ""
+message = "v{new_version} 版本升级"
+
+[[tool.bumpversion.files]]
+filename = "main.py"
+search = "__version__ = '{current_version}'"
+replace = "__version__ = '{new_version}'"
