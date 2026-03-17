@@ -1034,39 +1034,69 @@ def generate_excel_with_format(df, filename, df_metered=None):
     # 居中列：数字/状态类；其余文本列左对齐
     CENTER_COLS = {'序号', '库存(%)', '桶数', '设备归属', '网络同步', '安装时间'}
 
+    C_OUTER_B = '#2E75B6'   # 外框线颜色（与表头一致，视觉统一）
+
     # === 格式对象 ===
     title_fmt = workbook.add_format({
         'bold': True, 'font_name': FONT, 'font_size': 16,
         'align': 'center', 'valign': 'vcenter',
         'bg_color': C_TITLE_BG, 'font_color': '#FFFFFF',
-        'bottom': 2, 'bottom_color': C_HEADER_BG,   # 加粗底边框强化层次感
+        'top': 2, 'top_color': C_TITLE_BG,       # 顶部粗线与背景同色（融入）
+        'bottom': 2, 'bottom_color': C_HEADER_BG, # 底部粗线作为与表头的分隔
+        'left': 2, 'left_color': C_OUTER_B,
+        'right': 2, 'right_color': C_OUTER_B,
     })
     header_fmt = workbook.add_format({
         'bold': True, 'font_name': FONT, 'font_size': 11,
         'align': 'center', 'valign': 'vcenter',
         'bg_color': C_HEADER_BG, 'font_color': '#FFFFFF',
-        'border': 1, 'border_color': '#1F4E79',
+        'border': 2, 'border_color': '#1F4E79',   # 四边粗线，强化表头分隔
     })
-    # 数据行底色：奇偶各两种对齐变体（直接写入单元格，兼容微信等不渲染条件格式的阅读器）
-    _R = {'font_name': FONT, 'font_size': 10, 'border': 1, 'border_color': C_BORDER, 'valign': 'vcenter'}
-    row_odd_center_fmt  = workbook.add_format({**_R, 'bg_color': '#FFFFFF',  'align': 'center'})
-    row_odd_left_fmt    = workbook.add_format({**_R, 'bg_color': '#FFFFFF',  'align': 'left'})
-    row_even_center_fmt = workbook.add_format({**_R, 'bg_color': C_ROW_EVEN, 'align': 'center'})
-    row_even_left_fmt   = workbook.add_format({**_R, 'bg_color': C_ROW_EVEN, 'align': 'left'})
 
-    # 库存(%) 静态颜色格式（含字体/边框/居中，直接写入单元格）
-    _I = {**_R, 'align': 'center'}
-    inv_green_fmt  = workbook.add_format({**_I, 'bg_color': '#C6EFCE', 'font_color': '#006100'})
-    inv_yellow_fmt = workbook.add_format({**_I, 'bg_color': '#FFEB9C', 'font_color': '#9C5700'})
-    inv_red_fmt    = workbook.add_format({**_I, 'bg_color': '#FFC7CE', 'font_color': '#9C0006'})
-    inv_orange_fmt = workbook.add_format({**_I, 'bg_color': '#FFCC99', 'font_color': '#333333'})
+    # 数据单元格按需创建格式：外框粗线(2)，内框细线(1)，奇偶底色，居中/左对齐，特殊色
+    # 使用缓存避免重复创建，最终格式对象数 ≤ 50 个
+    _fmt_cache = {}
 
-    # 网络同步 静态颜色格式
-    sync_green_fmt  = workbook.add_format({**_I, 'bg_color': '#C6EFCE', 'font_color': '#006100'})
-    sync_warn_fmt   = workbook.add_format({**_I, 'bg_color': '#FFD966', 'font_color': '#7D4C00'})
-    sync_red_fmt    = workbook.add_format({**_I, 'bg_color': '#FFC7CE', 'font_color': '#9C0006'})
-    sync_purple_fmt = workbook.add_format({**_I, 'bg_color': '#E2CFEE', 'font_color': '#7030A0'})
-    sync_gray_fmt   = workbook.add_format({**_I, 'bg_color': '#D9D9D9', 'font_color': '#666666'})
+    def _make_fmt(bg, align, font_color, top_b, bottom_b, left_b, right_b):
+        key = (bg, align, font_color, top_b, bottom_b, left_b, right_b)
+        if key not in _fmt_cache:
+            def _bc(w): return C_OUTER_B if w == 2 else C_BORDER
+            props = {
+                'font_name': FONT, 'font_size': 10, 'valign': 'vcenter',
+                'bg_color': bg, 'align': align,
+                'top':    top_b,    'top_color':    _bc(top_b),
+                'bottom': bottom_b, 'bottom_color': _bc(bottom_b),
+                'left':   left_b,   'left_color':   _bc(left_b),
+                'right':  right_b,  'right_color':  _bc(right_b),
+            }
+            if font_color:
+                props['font_color'] = font_color
+            _fmt_cache[key] = workbook.add_format(props)
+        return _fmt_cache[key]
+
+    def _inv_colors(val):
+        """根据库存值返回 (bg_color, font_color) 元组"""
+        if val == '无数据' or val is None or (isinstance(val, float) and pd.isna(val)):
+            return '#FFCC99', '#333333'
+        try:
+            v = float(val)
+            if v > 30: return '#C6EFCE', '#006100'
+            if v > 5:  return '#FFEB9C', '#9C5700'
+            return '#FFC7CE', '#9C0006'
+        except (ValueError, TypeError):
+            return '#FFCC99', '#333333'
+
+    _SYNC_COLOR_MAP = {
+        'online':       ('#C6EFCE', '#006100'),
+        'offline_warn': ('#FFD966', '#7D4C00'),
+        'offline':      ('#FFC7CE', '#9C0006'),
+        'never_synced': ('#E2CFEE', '#7030A0'),
+        'disabled':     ('#D9D9D9', '#666666'),
+    }
+
+    def _sync_colors(val):
+        """根据网络状态值返回 (bg_color, font_color) 元组"""
+        return _SYNC_COLOR_MAP.get(val, ('#D9D9D9', '#666666'))
 
     # 各列宽度（列名 → 字符宽度）
     # 总计 108 单位，配合 fit_to_pages(1,0) 打印缩放约 97%，近乎原比例适配 A4 竖向
@@ -1106,40 +1136,28 @@ def generate_excel_with_format(df, filename, df_metered=None):
         for col_num, col_name in enumerate(sheet_df.columns.values):
             ws.set_column(col_num, col_num, col_widths.get(col_name, 12))
 
-        # ── 数据行：静态写入颜色（直接附加格式到单元格，兼容微信等不渲染条件格式的阅读器）──
-        def _inv_fmt(val):
-            """根据库存值返回对应格式对象"""
-            if val == '无数据' or val is None or (isinstance(val, float) and pd.isna(val)):
-                return inv_orange_fmt
-            try:
-                v = float(val)
-                if v > 30:  return inv_green_fmt
-                if v > 5:   return inv_yellow_fmt
-                return inv_red_fmt
-            except (ValueError, TypeError):
-                return inv_orange_fmt
-
-        _sync_map = {
-            'online': sync_green_fmt, 'offline_warn': sync_warn_fmt,
-            'offline': sync_red_fmt,  'never_synced': sync_purple_fmt,
-            'disabled': sync_gray_fmt,
-        }
-
-        for row_num in range(len(sheet_df)):
+        # ── 数据行：按边缘位置决定粗/细边框，直接写入格式（兼容所有阅读器）──
+        total_rows = len(sheet_df)
+        for row_num in range(total_rows):
             excel_row = row_num + 2
             ws.set_row(excel_row, 20)
-            is_even = (excel_row % 2 == 0)   # Excel行号偶数(4,6,8…) → 浅蓝底
+            is_even = (excel_row % 2 == 0)
+            t_b = 2 if row_num == 0             else 1  # 首行顶边粗
+            b_b = 2 if row_num == total_rows - 1 else 1  # 末行底边粗
+            bg_row = C_ROW_EVEN if is_even else '#FFFFFF'
             for col_num, col_name in enumerate(sheet_df.columns.values):
-                val = sheet_df.iloc[row_num, col_num]
+                val   = sheet_df.iloc[row_num, col_num]
+                l_b   = 2 if col_num == 0         else 1  # 首列左边粗
+                r_b   = 2 if col_num == last_col   else 1  # 末列右边粗
+                align = 'center' if col_name in CENTER_COLS else 'left'
                 if col_name == '库存(%)':
-                    fmt = _inv_fmt(val)
+                    bg, fc = _inv_colors(val)
                 elif col_name == '网络同步':
-                    fmt = _sync_map.get(str(val), sync_gray_fmt)
-                elif col_name in CENTER_COLS:
-                    fmt = row_even_center_fmt if is_even else row_odd_center_fmt
+                    bg, fc = _sync_colors(str(val))
                 else:
-                    fmt = row_even_left_fmt if is_even else row_odd_left_fmt
-                ws.write(excel_row, col_num, val, fmt)
+                    bg, fc = bg_row, None
+                ws.write(excel_row, col_num, val,
+                         _make_fmt(bg, align, fc, t_b, b_b, l_b, r_b))
 
         # ── 冻结标题+表头两行 ──
         ws.freeze_panes(2, 0)
@@ -1147,11 +1165,12 @@ def generate_excel_with_format(df, filename, df_metered=None):
         # ── 自动筛选（作用在表头行） ──
         ws.autofilter(1, 0, last_data_row, last_col)
 
-        # ── A4 竖向打印设置 ──
-        ws.set_paper(9)                    # A4 纸张
-        ws.fit_to_pages(1, 0)             # 列宽自适应 1 页宽，行数不限
-        ws.set_margins(left=0.4, right=0.4, top=0.5, bottom=0.5)
-        ws.repeat_rows(0, 1)              # 每页重复打印标题行 + 表头行
+        # ── 打印设置：最小页边距 + 竖横向自适应 + 页脚页码 + 重复表头 ──
+        ws.set_paper(9)                                    # A4
+        ws.fit_to_pages(1, 0)                             # 宽度1页，行数不限（竖/横向通用）
+        ws.set_margins(left=0.25, right=0.25, top=0.5, bottom=0.5)  # 最小侧边距
+        ws.set_footer('&C第 &P 页 / 共 &N 页')            # 居中页码
+        ws.repeat_rows(0, 1)                              # 每页重复标题行+表头行
 
     apply_sheet_format(
         writer.sheets[main_sheet], df,
