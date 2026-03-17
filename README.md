@@ -244,6 +244,38 @@ Environment="FEISHU_ALERT_WEBHOOK=https://open.feishu.cn/open-apis/bot/v2/hook/x
 
 ---
 
+## 版本管理
+
+项目使用 [bump-my-version](https://github.com/callowayproject/bump-my-version) 管理版本号，配置文件为 [.bumpversion.toml](.bumpversion.toml)。
+
+### 安装
+
+```bash
+pip install bump-my-version
+```
+
+### 发布新版本
+
+```bash
+bump-my-version bump patch   # 补丁版本：1.1.3 → 1.1.4（Bug 修复）
+bump-my-version bump minor   # 次版本：  1.1.3 → 1.2.0（新功能）
+bump-my-version bump major   # 主版本：  1.1.3 → 2.0.0（破坏性变更）
+```
+
+执行后自动完成：
+
+1. 更新 [main.py](main.py) 中的 `__version__` 字段
+2. 创建 git commit，消息格式：`v{new_version} 版本升级`
+3. 打 git tag：`v{new_version}`
+
+提交和 tag 创建后，手动推送到远程：
+
+```bash
+git push --follow-tags
+```
+
+---
+
 ## 数据流程
 
 ```
