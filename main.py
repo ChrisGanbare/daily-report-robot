@@ -1033,7 +1033,6 @@ def generate_excel_with_format(df, filename, df_metered=None):
 
     # 居中列：数字/状态类；其余文本列左对齐
     CENTER_COLS = {'序号', '库存(%)', '桶数', '设备归属', '网络同步', '安装时间'}
-    LEFT_COLS   = {'客户名称', '设备编号', '油品型号', '安装地点'}
 
     # === 格式对象 ===
     title_fmt = workbook.add_format({
@@ -1048,23 +1047,26 @@ def generate_excel_with_format(df, filename, df_metered=None):
         'bg_color': C_HEADER_BG, 'font_color': '#FFFFFF',
         'border': 1, 'border_color': '#1F4E79',
     })
-    row_odd_fmt  = workbook.add_format({'font_name': FONT, 'font_size': 10, 'bg_color': '#FFFFFF',  'border': 1, 'border_color': C_BORDER, 'valign': 'vcenter'})
-    row_even_fmt = workbook.add_format({'font_name': FONT, 'font_size': 10, 'bg_color': C_ROW_EVEN, 'border': 1, 'border_color': C_BORDER, 'valign': 'vcenter'})
+    # 数据行底色：奇偶各两种对齐变体（直接写入单元格，兼容微信等不渲染条件格式的阅读器）
+    _R = {'font_name': FONT, 'font_size': 10, 'border': 1, 'border_color': C_BORDER, 'valign': 'vcenter'}
+    row_odd_center_fmt  = workbook.add_format({**_R, 'bg_color': '#FFFFFF',  'align': 'center'})
+    row_odd_left_fmt    = workbook.add_format({**_R, 'bg_color': '#FFFFFF',  'align': 'left'})
+    row_even_center_fmt = workbook.add_format({**_R, 'bg_color': C_ROW_EVEN, 'align': 'center'})
+    row_even_left_fmt   = workbook.add_format({**_R, 'bg_color': C_ROW_EVEN, 'align': 'left'})
 
-    # 数据单元格对齐格式（背景/边框由条件格式负责，此处只设字体+对齐）
-    data_center_fmt = workbook.add_format({'font_name': FONT, 'font_size': 10, 'align': 'center', 'valign': 'vcenter'})
-    data_left_fmt   = workbook.add_format({'font_name': FONT, 'font_size': 10, 'align': 'left',   'valign': 'vcenter'})
+    # 库存(%) 静态颜色格式（含字体/边框/居中，直接写入单元格）
+    _I = {**_R, 'align': 'center'}
+    inv_green_fmt  = workbook.add_format({**_I, 'bg_color': '#C6EFCE', 'font_color': '#006100'})
+    inv_yellow_fmt = workbook.add_format({**_I, 'bg_color': '#FFEB9C', 'font_color': '#9C5700'})
+    inv_red_fmt    = workbook.add_format({**_I, 'bg_color': '#FFC7CE', 'font_color': '#9C0006'})
+    inv_orange_fmt = workbook.add_format({**_I, 'bg_color': '#FFCC99', 'font_color': '#333333'})
 
-    # 条件格式（库存 + 网络同步）—— 带边框，优先级高于行底色
-    inv_green_fmt  = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100', 'border': 1, 'border_color': C_BORDER, 'align': 'center'})
-    inv_yellow_fmt = workbook.add_format({'bg_color': '#FFEB9C', 'font_color': '#9C5700', 'border': 1, 'border_color': C_BORDER, 'align': 'center'})
-    inv_red_fmt    = workbook.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006', 'border': 1, 'border_color': C_BORDER, 'align': 'center'})
-    inv_orange_fmt = workbook.add_format({'bg_color': '#FFCC99', 'font_color': '#333333', 'border': 1, 'border_color': C_BORDER, 'align': 'center'})
-    sync_green_fmt  = workbook.add_format({'bg_color': '#C6EFCE', 'font_color': '#006100', 'border': 1, 'border_color': C_BORDER, 'align': 'center'})
-    sync_warn_fmt   = workbook.add_format({'bg_color': '#FFD966', 'font_color': '#7D4C00', 'border': 1, 'border_color': C_BORDER, 'align': 'center'})
-    sync_red_fmt    = workbook.add_format({'bg_color': '#FFC7CE', 'font_color': '#9C0006', 'border': 1, 'border_color': C_BORDER, 'align': 'center'})
-    sync_purple_fmt = workbook.add_format({'bg_color': '#E2CFEE', 'font_color': '#7030A0', 'border': 1, 'border_color': C_BORDER, 'align': 'center'})
-    sync_gray_fmt   = workbook.add_format({'bg_color': '#D9D9D9', 'font_color': '#666666', 'border': 1, 'border_color': C_BORDER, 'align': 'center'})
+    # 网络同步 静态颜色格式
+    sync_green_fmt  = workbook.add_format({**_I, 'bg_color': '#C6EFCE', 'font_color': '#006100'})
+    sync_warn_fmt   = workbook.add_format({**_I, 'bg_color': '#FFD966', 'font_color': '#7D4C00'})
+    sync_red_fmt    = workbook.add_format({**_I, 'bg_color': '#FFC7CE', 'font_color': '#9C0006'})
+    sync_purple_fmt = workbook.add_format({**_I, 'bg_color': '#E2CFEE', 'font_color': '#7030A0'})
+    sync_gray_fmt   = workbook.add_format({**_I, 'bg_color': '#D9D9D9', 'font_color': '#666666'})
 
     # 各列宽度（列名 → 字符宽度）
     col_widths = {
@@ -1103,62 +1105,46 @@ def generate_excel_with_format(df, filename, df_metered=None):
         for col_num, col_name in enumerate(sheet_df.columns.values):
             ws.set_column(col_num, col_num, col_widths.get(col_name, 12))
 
-        # ── 数据行行高 + 对齐格式
-        # 居中列：数字/状态类；左对齐列：长文本类
-        # （Excel 条件格式无法修改对齐方式，只能通过单元格格式设置）──
+        # ── 数据行：静态写入颜色（直接附加格式到单元格，兼容微信等不渲染条件格式的阅读器）──
+        def _inv_fmt(val):
+            """根据库存值返回对应格式对象"""
+            if val == '无数据' or val is None or (isinstance(val, float) and pd.isna(val)):
+                return inv_orange_fmt
+            try:
+                v = float(val)
+                if v > 30:  return inv_green_fmt
+                if v > 5:   return inv_yellow_fmt
+                return inv_red_fmt
+            except (ValueError, TypeError):
+                return inv_orange_fmt
+
+        _sync_map = {
+            'online': sync_green_fmt, 'offline_warn': sync_warn_fmt,
+            'offline': sync_red_fmt,  'never_synced': sync_purple_fmt,
+            'disabled': sync_gray_fmt,
+        }
+
         for row_num in range(len(sheet_df)):
-            ws.set_row(row_num + 2, 20)
-        for col_num, col_name in enumerate(sheet_df.columns.values):
-            if col_name in CENTER_COLS or col_name in LEFT_COLS:
-                fmt = data_center_fmt if col_name in CENTER_COLS else data_left_fmt
-                for row_num in range(len(sheet_df)):
-                    val = sheet_df.iloc[row_num, col_num]
-                    ws.write(row_num + 2, col_num, val, fmt)
+            excel_row = row_num + 2
+            ws.set_row(excel_row, 20)
+            is_even = (excel_row % 2 == 0)   # Excel行号偶数(4,6,8…) → 浅蓝底
+            for col_num, col_name in enumerate(sheet_df.columns.values):
+                val = sheet_df.iloc[row_num, col_num]
+                if col_name == '库存(%)':
+                    fmt = _inv_fmt(val)
+                elif col_name == '网络同步':
+                    fmt = _sync_map.get(str(val), sync_gray_fmt)
+                elif col_name in CENTER_COLS:
+                    fmt = row_even_center_fmt if is_even else row_odd_center_fmt
+                else:
+                    fmt = row_even_left_fmt if is_even else row_odd_left_fmt
+                ws.write(excel_row, col_num, val, fmt)
 
         # ── 冻结标题+表头两行 ──
         ws.freeze_panes(2, 0)
 
         # ── 自动筛选（作用在表头行） ──
         ws.autofilter(1, 0, last_data_row, last_col)
-
-        # ── 条件格式（先加 = 优先级高）──
-        # ① 库存列
-        try:
-            inv_idx = sheet_df.columns.get_loc('库存(%)')
-        except KeyError:
-            inv_idx = 4
-        ws.conditional_format(2, inv_idx, last_data_row, inv_idx,
-            {'type': 'text', 'criteria': 'containing', 'value': '无数据', 'format': inv_orange_fmt})
-        ws.conditional_format(2, inv_idx, last_data_row, inv_idx,
-            {'type': 'cell', 'criteria': '>', 'value': 30, 'format': inv_green_fmt})
-        ws.conditional_format(2, inv_idx, last_data_row, inv_idx,
-            {'type': 'cell', 'criteria': 'between', 'minimum': 5.000001, 'maximum': 30, 'format': inv_yellow_fmt})
-        ws.conditional_format(2, inv_idx, last_data_row, inv_idx,
-            {'type': 'cell', 'criteria': '<=', 'value': 5, 'format': inv_red_fmt})
-
-        # ② 网络同步列（全部用 equal to 精确匹配，避免 offline_warn 被 offline 规则误命中）
-        try:
-            sync_idx = sheet_df.columns.get_loc('网络同步')
-            ws.conditional_format(2, sync_idx, last_data_row, sync_idx,
-                {'type': 'cell', 'criteria': '==', 'value': '"online"',       'format': sync_green_fmt})
-            ws.conditional_format(2, sync_idx, last_data_row, sync_idx,
-                {'type': 'cell', 'criteria': '==', 'value': '"offline_warn"', 'format': sync_warn_fmt})
-            ws.conditional_format(2, sync_idx, last_data_row, sync_idx,
-                {'type': 'cell', 'criteria': '==', 'value': '"offline"',      'format': sync_red_fmt})
-            ws.conditional_format(2, sync_idx, last_data_row, sync_idx,
-                {'type': 'cell', 'criteria': '==', 'value': '"never_synced"', 'format': sync_purple_fmt})
-            ws.conditional_format(2, sync_idx, last_data_row, sync_idx,
-                {'type': 'cell', 'criteria': '==', 'value': '"disabled"',     'format': sync_gray_fmt})
-        except KeyError:
-            pass
-
-        # ③ 交替行底色（后加 = 优先级低，被上方颜色覆盖）
-        # MOD(ROW(),2)=1 → Excel奇数行(3,5,7…) → 0-indexed行2,4,6… → 白色
-        ws.conditional_format(2, 0, last_data_row, last_col,
-            {'type': 'formula', 'criteria': '=MOD(ROW(),2)=1', 'format': row_odd_fmt})
-        # MOD(ROW(),2)=0 → Excel偶数行(4,6,8…) → 0-indexed行3,5,7… → 浅蓝
-        ws.conditional_format(2, 0, last_data_row, last_col,
-            {'type': 'formula', 'criteria': '=MOD(ROW(),2)=0', 'format': row_even_fmt})
 
     apply_sheet_format(
         writer.sheets[main_sheet], df,
