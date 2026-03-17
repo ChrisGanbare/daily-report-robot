@@ -60,18 +60,18 @@ nssm.exe set     %SERVICE% Start            SERVICE_AUTO_START
 :: Restart the service 30 seconds after a crash
 nssm.exe set     %SERVICE% AppRestartDelay  30000
 
-:: --- It is recommended to inject sensitive credentials via environment variables ---
-:: Uncomment and fill in the real values, then re-run the script.
-:: Or configure them via "nssm.exe edit %SERVICE%" after installation.
+:: --- Sensitive credentials: fill in the real values before running ---
+:: Copy this file to deploy_windows.local.bat, fill in the values there,
+:: and run that local copy instead. Never commit the local copy.
 :: All environment variables must be set in a SINGLE command.
 :: Multiple calls to AppEnvironmentExtra will overwrite each other - only the last one survives.
 nssm.exe set %SERVICE% AppEnvironmentExtra ^
-    "DB_HOST=8.139.83.130" ^
-    "DB_PASSWORD=ZRYLPass220609!" ^
-    "WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=928f052d-7b3a-4137-bb54-8f1528da84e0" ^
-    "FEISHU_APP_ID=cli_a939789876385bc0" ^
-    "FEISHU_APP_SECRET=hoiNNOoVnSBBA0jkDNIwGlH58byL5sc0" ^
-    "FEISHU_ALERT_WEBHOOK=https://open.feishu.cn/open-apis/bot/v2/hook/96f76657-dd2c-4a10-8729-25c9a6821e77"
+    "DB_HOST=YOUR_DB_HOST" ^
+    "DB_PASSWORD=YOUR_DB_PASSWORD" ^
+    "WEBHOOK_URL=YOUR_WECOM_WEBHOOK_URL" ^
+    "FEISHU_APP_ID=YOUR_FEISHU_APP_ID" ^
+    "FEISHU_APP_SECRET=YOUR_FEISHU_APP_SECRET" ^
+    "FEISHU_ALERT_WEBHOOK=YOUR_FEISHU_ALERT_WEBHOOK_URL"
 
 :: Redirect stdout/stderr to logs (optional)
 :: nssm.exe set %SERVICE% AppStdout "%INSTALL_DIR%\stdout.log"
