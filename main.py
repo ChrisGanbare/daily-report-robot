@@ -906,6 +906,17 @@ def process_data(df):
     df['avai_ratio'] = df['avai_ratio'].fillna('无数据')
     df['oil_model'] = df['oil_model'].fillna('未设置')
 
+    # 7b. 安装地点去除省份前缀，节省列宽（主表和计量客户表均生效）
+    if 'location' in df.columns:
+        def _strip_province(loc):
+            if not loc or not isinstance(loc, str) or str(loc).strip() in ('', 'nan', 'None'):
+                return loc
+            import re
+            s = re.sub(r'^[\u4e00-\u9fa5]{2,4}省', '', str(loc).strip())
+            s = re.sub(r'^[\u4e00-\u9fa5]{2,8}自治区', '', s)
+            return s
+        df['location'] = df['location'].apply(_strip_province)
+
     # 8. 在列重命名前，按 customer_id 筛出计量客户子集
     if metered_customer_ids and 'customer_id' in df.columns:
         df_metered = df[df['customer_id'].isin(metered_customer_ids)].copy()
@@ -1123,13 +1134,12 @@ def generate_excel_with_format(df, filename, df_metered=None):
             if col_name == '网络同步':
                 ws.write_comment(1, col_num,
                     '【网络同步状态说明】\n'
-                    'online        — 24h 内正常上报（绿色）\n'
-                    'offline_warn  — 24~72h 未上报，短期预警（橙色）\n'
-                    'offline       — 超过 72h 未上报，长期失联（红色）\n'
-                    'never_synced  — 从未上报，设备未激活（紫色）\n'
-                    'disabled      — 已停用，或设备待安装调试\n'
-                    '                且未录入系统（灰色）',
-                    {'x_scale': 2.5, 'y_scale': 2.2, 'font_size': 10}
+                    'online — 24h 内正常上报（绿）\n'
+                    'offline_warn — 24~72h 未上报（橙）\n'
+                    'offline — 超过 72h 未上报（红）\n'
+                    'never_synced — 从未上报，设备未激活（紫）\n'
+                    'disabled — 已停用 / 待安装调试（灰）',
+                    {'x_scale': 2.5, 'y_scale': 3.5, 'font_size': 10}
                 )
 
         # ── 列宽 ──
@@ -1166,6 +1176,7 @@ def generate_excel_with_format(df, filename, df_metered=None):
         ws.autofilter(1, 0, last_data_row, last_col)
 
         # ── 打印设置：最小页边距 + 竖横向自适应 + 页脚页码 + 重复表头 ──
+        ws.print_area(0, 0, last_data_row, last_col)      # 显式声明打印区域，确保末列不被截断
         ws.set_paper(9)                                    # A4
         ws.fit_to_pages(1, 0)                             # 宽度1页，行数不限（竖/横向通用）
         ws.set_margins(left=0.25, right=0.25, top=0.5, bottom=0.5)  # 最小侧边距
