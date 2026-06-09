@@ -48,7 +48,8 @@ nssm.exe stop    %SERVICE% 2>nul
 nssm.exe remove  %SERVICE% confirm 2>nul
 
 :: Install the service
-for /f "delims=" %%i in ('where %PYTHON%') do set PYTHON_EXE=%%i
+:: Use Python itself to get the exact executable path (handles both "python" and "py -3")
+for /f "delims=" %%i in ('%PYTHON% -c "import sys; print(sys.executable)"') do set PYTHON_EXE=%%i
 nssm.exe install %SERVICE% "%PYTHON_EXE%"
 nssm.exe set     %SERVICE% AppParameters    "%INSTALL_DIR%\main.py"
 nssm.exe set     %SERVICE% AppDirectory     "%INSTALL_DIR%"
@@ -59,22 +60,22 @@ nssm.exe set     %SERVICE% Start            SERVICE_AUTO_START
 :: Restart the service 30 seconds after a crash
 nssm.exe set     %SERVICE% AppRestartDelay  30000
 
-:: --- Inject credentials via environment variables ---
-:: IMPORTANT: nssm AppEnvironmentExtra must be set in ONE single call.
-::            Multiple separate calls OVERWRITE each other - only the last one takes effect.
-:: Fill in the real values below and uncomment the entire block.
-::
-:: nssm.exe set %SERVICE% AppEnvironmentExtra ^
-::     "DB_HOST=127.0.0.1" ^
-::     "DB_PORT=3306" ^
-::     "DB_USER=your_db_user" ^
-::     "DB_PASSWORD=your_db_password" ^
-::     "DB_NAME=oil" ^
-::     "WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY" ^
-::     "FEISHU_APP_ID=cli_xxx" ^
-::     "FEISHU_APP_SECRET=xxx" ^
-::     "CONFIG_EXCEL_URL=https://your_feishu_or_tencent_doc_url" ^
-::     "FEISHU_ALERT_WEBHOOK=https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+:: --- Sensitive credentials: fill in the real values before running ---
+:: Copy this file to deploy_windows.local.bat, fill in the values there,
+:: and run that local copy instead. Never commit the local copy.
+:: All environment variables must be set in a SINGLE command.
+:: Multiple calls to AppEnvironmentExtra will overwrite each other - only the last one survives.
+nssm.exe set %SERVICE% AppEnvironmentExtra ^
+    "DB_HOST=YOUR_DB_HOST" ^
+    "DB_PORT=YOUR_DB_PORT" ^
+    "DB_USER=YOUR_DB_USER" ^
+    "DB_PASSWORD=YOUR_DB_PASSWORD" ^
+    "DB_NAME=YOUR_DB_NAME" ^
+    "WEBHOOK_URL=YOUR_WECOM_WEBHOOK_URL" ^
+    "CONFIG_EXCEL_URL=YOUR_CONFIG_EXCEL_URL" ^
+    "FEISHU_APP_ID=YOUR_FEISHU_APP_ID" ^
+    "FEISHU_APP_SECRET=YOUR_FEISHU_APP_SECRET" ^
+    "FEISHU_ALERT_WEBHOOK=YOUR_FEISHU_ALERT_WEBHOOK_URL"
 
 :: Redirect stdout/stderr to logs (optional)
 :: nssm.exe set %SERVICE% AppStdout "%INSTALL_DIR%\stdout.log"
@@ -99,4 +100,3 @@ echo   Remove service: nssm.exe remove %SERVICE% confirm
 echo ==============================
 pause
 endlocal
-pause

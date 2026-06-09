@@ -31,6 +31,8 @@ Daily_Report_Robot/
 ├── deploy_linux.sh        # Linux 一键部署脚本（systemd 服务）
 ├── deploy_windows.bat     # Windows 一键部署脚本（NSSM 服务）
 ├── nssm.exe               # Windows 服务管理工具（deploy_windows.bat 依赖）
+├── test_bugfix.py         # Bug 修复验证测试（6 项 bug，14 个用例）
+├── test_regression.py     # 全链路回归测试（7 个模块，36 个用例）
 └── README.md
 ```
 
@@ -450,7 +452,40 @@ send_to_robot()  ← 上传并推送至企业微信
 
 ## 测试验收
 
-### 验收项目及结果（v1.0.0，测试日期：2026-03-16）
+### 自动化测试
+
+```bash
+# Bug 修复验证（14 个用例）
+python test_bugfix.py
+
+# 全链路回归测试（36 个用例）
+python test_regression.py
+```
+
+**test_bugfix.py 覆盖范围：**
+
+| Bug | 用例数 | 验证内容 |
+|-----|--------|---------|
+| Bug 1：`to_datetime` 无效日期崩溃 | 4 | 正常格式化 / 无效转空串 / 全部无效不崩溃 / 旧代码确实崩溃 |
+| Bug 2：`ExcelWriter` 资源泄漏 | 2 | 异常时 context manager 自动关闭 / 正常路径文件写入 |
+| Bug 3：列名含空格比对失效 | 2 | 空格列名 strip 后正确告警 / 无空格基准不误报 |
+| Bug 4：上传缺 `raise_for_status` | 2 | HTTP 500 被捕获 / 非 JSON 响应被捕获 |
+| Bug 5：发送结果被丢弃 | 2 | `errcode=0` 记录成功 / `errcode≠0` 触发告警 |
+| Bug 6：空报表被发出 | 2 | 空 df_final 不生成文件且告警 / 非空正常执行 |
+
+**test_regression.py 覆盖范围：**
+
+| 模块 | 用例数 | 验证内容 |
+|------|--------|---------|
+| `check_sync` 五级状态 | 5 | disabled / never_synced / online / offline_warn / offline 全覆盖 |
+| `process_data` 核心管道 | 10 | 空客户名过滤 / 排除规则（整体+指定）/ 计量客户子集 / 补录追加 / 补录已入库不重复 / 安装时间排序 / 序号连续 / 省份前缀去除 / 无效日期不崩溃 |
+| `load_config` 降级策略 | 3 | 无 URL 读本地 / 在线异常降级本地 / 无配置返回空不崩溃 |
+| `generate_excel_with_format` | 5 | 文件存在且含主表 / 计量 Sheet 生成 / 空计量不生成 / 行数匹配 / 异常不残留资源 |
+| `send_to_robot` 分支路径 | 6 | 无 Webhook 跳过 / 文件不存在跳过 / 全路径成功 / HTTP 错误告警 / errcode≠0 告警 / 无 media_id 告警 |
+| `daily_task` 主流程 | 4 | DB 空提前返回 / 空 df_final 跳过 Excel / Excel 异常跳过发送 / 全流程正常 |
+| `_check_device_count_diff` | 3 | 数量相等无告警 / 差异触发告警 / 列名含空格正确匹配 |
+
+### 人工验收项目及结果（v1.0.0，测试日期：2026-03-16）
 
 > **后续 Bugfix 与功能增强：**
 > - **v1.0.1**：修复补录设备「已入库」判断漏洞。原逻辑以排除后的报表编号集（`existing_codes`）判断补录设备是否入库，导致「在DB但被排除」的设备被误判为未入库，以 `disabled` 状态追加到报表末尾。修复后改用全量 `_db_codes` 判断，排除设备不会再被重复追加。
@@ -460,6 +495,16 @@ send_to_robot()  ← 上传并推送至企业微信
 > - **v1.1.1**：修复打印预览末列截断问题（`安装地点` 消失）；修复网络同步批注在冻结行遮挡时显示不全（y_scale 2.2→3.5）；新增安装地点省份/自治区前缀自动去除。
 > - **v1.1.2**：补充直辖市重复前缀去除（如"重庆市重庆市长寿区"→"重庆市长寿区"）；调整列宽：客户名称/油品型号各 +4 汉字，设备编号 +3 英文，网络同步 -2 英文。
 > - **v1.1.3**：安装地点列宽缩至 6 汉字（12 单位），腾出宽度分配给设备编号/油品型号/设备归属各 +1。
+> - **v1.1.9（Bugfix）**：修复 6 项 bug（详见下表），新增自动化测试（`test_bugfix.py` 14 用例 + `test_regression.py` 36 用例，全部通过）：
+>
+>   | # | 位置 | 问题描述 | 修复方式 |
+>   |---|------|---------|---------|
+>   | 1 | `process_data` 第 874 行 | `pd.to_datetime` 无 `errors='coerce'`，无效日期导致整个任务崩溃 | 添加 `errors='coerce'`，无效日期转为 NaT |
+>   | 2 | `generate_excel_with_format` | `pd.ExcelWriter` 未用 context manager，异常时文件不写盘且资源泄漏 | 改用 `with ... as writer:` |
+>   | 3 | `load_config` 第 393/455 行 | `_check_device_count_diff` 在列名 `strip()` 前调用，空格列名静默失效 | 调用前通过 `rename(columns=lambda c: str(c).strip())` 去空格 |
+>   | 4 | `send_to_robot` 第 1221 行 | 上传无 `raise_for_status()`，HTTP 错误时 `json()` 抛 `JSONDecodeError`，真实失败原因被掩盖 | 新增 `resp.raise_for_status()` |
+>   | 5 | `send_to_robot` 第 1226 行 | 企业微信发送响应被丢弃，`errcode≠0` 时误报发送成功 | 保存响应并检查 `errcode`，非 0 时推送飞书告警 |
+>   | 6 | `daily_task` 第 1283 行 | `df_final` 为空时仍生成并发送空 Excel，无告警 | 空时提前返回并推送飞书告警 |
 
 | # | 验收项目 | 预期结果 | 实测结果 |
 |---|----------|----------|----------|

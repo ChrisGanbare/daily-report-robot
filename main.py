@@ -17,7 +17,7 @@ load_dotenv()
 
 logger = logging.getLogger('daily_report')
 
-__version__ = '1.1.8'
+__version__ = '1.1.10'
 
 # ================= 配置区域 =================
 # 所有凭据从环境变量读取（优先）或 .env 文件加载（本地开发）。
@@ -390,7 +390,7 @@ def load_config():
                         if not df_devices.empty:
                             loaded_source = "在线表格（飞书）"
                             logger.info("飞书在线配置加载成功")
-                            _check_device_count_diff(df_devices)
+                            _check_device_count_diff(df_devices.rename(columns=lambda c: str(c).strip()))
                         else:
                             logger.info("飞书表格无有效数据，将读取本地配置文件")
                             send_feishu_alert('warning', '飞书在线配置表格无有效数据，已切换本地文件')
@@ -452,7 +452,7 @@ def load_config():
                         if not df_devices.empty:
                             loaded_source = "在线表格"
                             logger.info("在线配置加载成功")
-                            _check_device_count_diff(df_devices)
+                            _check_device_count_diff(df_devices.rename(columns=lambda c: str(c).strip()))
                         else:
                             logger.info("在线表格无有效数据，将读取本地配置文件")
                             send_feishu_alert('warning', '在线配置表格无有效数据，已切换本地文件')
@@ -871,7 +871,7 @@ def process_data(df):
     logger.info(f"排除规则过滤后剩余: {len(df)} 台")
 
     # 4. 排序（按安装时间升序）
-    df['install_time'] = pd.to_datetime(df['install_time'])
+    df['install_time'] = pd.to_datetime(df['install_time'], errors='coerce')
     df = df.sort_values(by='install_time', ascending=True)
     df['install_time'] = df['install_time'].dt.strftime('%Y.%m.%d').fillna('')
 
@@ -1024,8 +1024,13 @@ def process_data(df):
 
 def generate_excel_with_format(df, filename, df_metered=None):
     """生成Excel：主表 + 可选计量客户单列 sheet"""
-    writer = pd.ExcelWriter(filename, engine='xlsxwriter')
+    with pd.ExcelWriter(filename, engine='xlsxwriter') as writer:
+        _generate_excel_body(df, filename, df_metered, writer)
+    return filename
 
+
+def _generate_excel_body(df, filename, df_metered, writer):
+    """内部实现：在已打开的 ExcelWriter 中写入数据和格式"""
     main_sheet = '安卓设备日统计表'
     metered_sheet = '计量客户单列'
     today_str = datetime.datetime.now().strftime('%Y年%m月%d日')
@@ -1195,8 +1200,6 @@ def generate_excel_with_format(df, filename, df_metered=None):
             f'Android版智能油库油量统计表 · 计量客户（{today_str}）'
         )
 
-    writer.close()
-    return filename
 
 
 
@@ -1219,12 +1222,20 @@ def send_to_robot(filename):
             files = {'file': (os.path.basename(filename), f,
                               'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet')}
             resp = requests.post(upload_url, files=files, timeout=30)
+            resp.raise_for_status()
             media_id = resp.json().get('media_id')
 
         if media_id:
             msg = {"msgtype": "file", "file": {"media_id": media_id}}
-            requests.post(WEBHOOK_URL, json=msg, timeout=15)
-            logger.info("报表发送成功")
+            send_resp = requests.post(WEBHOOK_URL, json=msg, timeout=15)
+            send_resp.raise_for_status()
+            send_result = send_resp.json()
+            if send_result.get('errcode', 0) != 0:
+                errmsg = send_result.get('errmsg', '未知错误')
+                logger.info(f"报表发送失败（企业微信返回错误）: errcode={send_result.get('errcode')}, errmsg={errmsg}")
+                send_feishu_alert('warning', '报表发送失败（企业微信业务层错误）', errmsg)
+            else:
+                logger.info("报表发送成功")
         else:
             logger.info(f"上传失败: {resp.text}")
             send_feishu_alert('warning', '报表上传失败', resp.text)
@@ -1281,6 +1292,11 @@ def daily_task():
         return
 
     df_final, df_metered = process_data(df_db)
+
+    if df_final.empty:
+        logger.info("处理后无有效设备数据（可能全部被排除规则过滤），跳过报表生成")
+        send_feishu_alert('warning', '本次任务无有效设备数据，报表未生成', '处理后设备列表为空，请检查排除规则配置是否正确')
+        return
 
     filename = f"{today_str}智能油库油量统计表.xlsx"
 

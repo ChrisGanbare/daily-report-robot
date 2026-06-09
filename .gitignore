@@ -6,6 +6,7 @@ __pycache__/
 
 # 凭据文件 —— 绝对不能提交
 .env
+deploy_windows.local.bat
 
 # IDE
 .vscode/
