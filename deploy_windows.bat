@@ -59,15 +59,22 @@ nssm.exe set     %SERVICE% Start            SERVICE_AUTO_START
 :: Restart the service 30 seconds after a crash
 nssm.exe set     %SERVICE% AppRestartDelay  30000
 
-:: --- It is recommended to inject sensitive credentials via environment variables ---
-:: Uncomment and fill in the real values, then re-run the script.
-:: Or configure them via "nssm.exe edit %SERVICE%" after installation.
-:: nssm.exe set %SERVICE% AppEnvironmentExtra "DB_HOST=127.0.0.1"
-:: nssm.exe set %SERVICE% AppEnvironmentExtra "DB_PASSWORD=your_password"
-:: nssm.exe set %SERVICE% AppEnvironmentExtra "WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY"
-:: nssm.exe set %SERVICE% AppEnvironmentExtra "FEISHU_APP_ID=cli_xxx"
-:: nssm.exe set %SERVICE% AppEnvironmentExtra "FEISHU_APP_SECRET=xxx"
-:: nssm.exe set %SERVICE% AppEnvironmentExtra "FEISHU_ALERT_WEBHOOK=https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
+:: --- Inject credentials via environment variables ---
+:: IMPORTANT: nssm AppEnvironmentExtra must be set in ONE single call.
+::            Multiple separate calls OVERWRITE each other - only the last one takes effect.
+:: Fill in the real values below and uncomment the entire block.
+::
+:: nssm.exe set %SERVICE% AppEnvironmentExtra ^
+::     "DB_HOST=127.0.0.1" ^
+::     "DB_PORT=3306" ^
+::     "DB_USER=your_db_user" ^
+::     "DB_PASSWORD=your_db_password" ^
+::     "DB_NAME=oil" ^
+::     "WEBHOOK_URL=https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY" ^
+::     "FEISHU_APP_ID=cli_xxx" ^
+::     "FEISHU_APP_SECRET=xxx" ^
+::     "CONFIG_EXCEL_URL=https://your_feishu_or_tencent_doc_url" ^
+::     "FEISHU_ALERT_WEBHOOK=https://open.feishu.cn/open-apis/bot/v2/hook/xxx"
 
 :: Redirect stdout/stderr to logs (optional)
 :: nssm.exe set %SERVICE% AppStdout "%INSTALL_DIR%\stdout.log"
