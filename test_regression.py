@@ -1,6 +1,6 @@
 """
 test_regression.py — 全链路回归测试
-覆盖：check_sync 五级状态 / process_data 核心管道 / load_config 降级策略 /
+覆盖：check_sync 六级状态 / process_data 核心管道 / load_config 降级策略 /
        generate_excel_with_format 文件完整性 / send_to_robot 分支路径
 不依赖真实数据库或外部网络，全部使用 mock / 本地数据。
 """
@@ -59,10 +59,10 @@ def _empty_config():
 
 
 # =============================================================================
-# 1. check_sync 五级网络状态
+# 1. check_sync 六级网络状态
 # =============================================================================
 class TestCheckSync(unittest.TestCase):
-    """直接通过 process_data 触发 check_sync，验证五级状态赋值"""
+    """直接通过 process_data 触发 check_sync，验证六级状态赋值"""
 
     def _run(self, device_status, modify_time_offset_h):
         """构造单行 DataFrame 跑 process_data，返回网络同步值"""
@@ -81,24 +81,98 @@ class TestCheckSync(unittest.TestCase):
         return df_out['网络同步'].iloc[0] if not df_out.empty else None
 
     def test_disabled(self):
-        """device_status=1 → disabled"""
-        self.assertEqual(self._run(1, 1), 'disabled')
+        """device_status=1 → 已停用"""
+        self.assertEqual(self._run(1, 1), '已停用')
 
     def test_never_synced(self):
-        """modify_time=None → never_synced"""
-        self.assertEqual(self._run(3, None), 'never_synced')
+        """modify_time=None → 未激活"""
+        self.assertEqual(self._run(3, None), '未激活')
 
     def test_online(self):
-        """modify_time 距今 1h → online"""
-        self.assertEqual(self._run(3, 1), 'online')
+        """modify_time 距今 1h → 在线"""
+        self.assertEqual(self._run(3, 1), '在线')
 
     def test_offline_warn(self):
-        """modify_time 距今 48h → offline_warn"""
-        self.assertEqual(self._run(3, 48), 'offline_warn')
+        """modify_time 距今 48h → 离线预警"""
+        self.assertEqual(self._run(3, 48), '离线预警')
 
     def test_offline(self):
-        """modify_time 距今 96h → offline"""
-        self.assertEqual(self._run(3, 96), 'offline')
+        """modify_time 距今 96h → 离线"""
+        self.assertEqual(self._run(3, 96), '离线')
+
+    def test_offline_with_is_stopped_becomes_disabled(self):
+        """离线(>72h) + is_stopped=True → 已停用"""
+        now = datetime.datetime.now()
+        m_time = now - datetime.timedelta(hours=96)
+        row = _make_db_row(device_status=3, modify_time=m_time)
+        df = _make_df(row)
+        cfg = ({'D001': {'barrels': 1, 'owner': '中润', 'is_stopped': True}}, [], set(), [])
+        with patch.object(main, 'load_config', return_value=cfg):
+            df_out, _ = main.process_data(df)
+        self.assertEqual(df_out['网络同步'].iloc[0], '已停用')
+
+    def test_offline_warn_not_affected_by_is_stopped(self):
+        """离线预警(≥18h且≤72h) + is_stopped=True → 仍为离线预警"""
+        now = datetime.datetime.now()
+        m_time = now - datetime.timedelta(hours=48)
+        row = _make_db_row(device_status=3, modify_time=m_time)
+        df = _make_df(row)
+        cfg = ({'D001': {'barrels': 1, 'owner': '中润', 'is_stopped': True}}, [], set(), [])
+        with patch.object(main, 'load_config', return_value=cfg):
+            df_out, _ = main.process_data(df)
+        self.assertEqual(df_out['网络同步'].iloc[0], '离线预警')
+
+    def test_online_not_affected_by_is_stopped(self):
+        """在线(<18h) + is_stopped=True → 仍为在线"""
+        now = datetime.datetime.now()
+        m_time = now - datetime.timedelta(hours=5)
+        row = _make_db_row(device_status=3, modify_time=m_time)
+        df = _make_df(row)
+        cfg = ({'D001': {'barrels': 1, 'owner': '中润', 'is_stopped': True}}, [], set(), [])
+        with patch.object(main, 'load_config', return_value=cfg):
+            df_out, _ = main.process_data(df)
+        self.assertEqual(df_out['网络同步'].iloc[0], '在线')
+
+    def test_device_not_in_config_not_affected(self):
+        """设备不在device_config中，is_stopped默认False，离线不受影响"""
+        now = datetime.datetime.now()
+        m_time = now - datetime.timedelta(hours=96)
+        row = _make_db_row(device_status=3, modify_time=m_time, device_code='D999')
+        df = _make_df(row)
+        with patch.object(main, 'load_config', return_value=_empty_config()):
+            df_out, _ = main.process_data(df)
+        self.assertEqual(df_out['网络同步'].iloc[0], '离线')
+
+    def test_is_stopped_false_does_not_affect_offline(self):
+        """is_stopped=False时，离线(>72h)仍为离线"""
+        now = datetime.datetime.now()
+        m_time = now - datetime.timedelta(hours=96)
+        row = _make_db_row(device_status=3, modify_time=m_time)
+        df = _make_df(row)
+        cfg = ({'D001': {'barrels': 1, 'owner': '中润', 'is_stopped': False}}, [], set(), [])
+        with patch.object(main, 'load_config', return_value=cfg):
+            df_out, _ = main.process_data(df)
+        self.assertEqual(df_out['网络同步'].iloc[0], '离线')
+
+    def test_exactly_18h_is_offline_warn(self):
+        """精确18h → 离线预警（≥18h 为离线预警）"""
+        now = datetime.datetime.now()
+        m_time = now - datetime.timedelta(hours=18)
+        row = _make_db_row(device_status=3, modify_time=m_time)
+        df = _make_df(row)
+        with patch.object(main, 'load_config', return_value=_empty_config()):
+            df_out, _ = main.process_data(df)
+        self.assertEqual(df_out['网络同步'].iloc[0], '离线预警')
+
+    def test_exactly_72h_is_offline_warn(self):
+        """精确72h → 离线预警（>72h 才进入离线）"""
+        now = datetime.datetime.now()
+        m_time = now - datetime.timedelta(hours=72, seconds=-1)  # 给 process_data 内部的 now 捕获留 1s 余量
+        row = _make_db_row(device_status=3, modify_time=m_time)
+        df = _make_df(row)
+        with patch.object(main, 'load_config', return_value=_empty_config()):
+            df_out, _ = main.process_data(df)
+        self.assertEqual(df_out['网络同步'].iloc[0], '离线预警')
 
 
 # =============================================================================
@@ -172,7 +246,7 @@ class TestProcessData(unittest.TestCase):
             df_out, _ = main.process_data(df)
         self.assertIn('S001', df_out['设备编号'].tolist())
         row = df_out[df_out['设备编号'] == 'S001'].iloc[0]
-        self.assertEqual(row['网络同步'], 'disabled')
+        self.assertEqual(row['网络同步'], '待安装')
 
     # ── 2f. 补录设备已入库则不追加 ───────────────────────────────────────────
     def test_supplemental_device_in_db_not_appended(self):
@@ -318,8 +392,8 @@ class TestGenerateExcel(unittest.TestCase):
                 '序号': i, '客户名称': f'客户{i}', '设备编号': f'D{i:03d}',
                 '油品型号': '0W-20', '库存(%)': i * 10,
                 '桶数': 2, '设备归属': '中润',
-                '网络同步': ['online', 'offline_warn', 'offline',
-                            'never_synced', 'disabled'][i % 5],
+                '网络同步': ['在线', '离线预警', '离线',
+                            '未激活', '已停用', '待安装'][i % 6],
                 '安装时间': '2023.01.01', '安装地点': f'测试地点{i}',
             })
         return pd.DataFrame(rows)

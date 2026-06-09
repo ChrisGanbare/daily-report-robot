@@ -17,7 +17,7 @@ load_dotenv()
 
 logger = logging.getLogger('daily_report')
 
-__version__ = '1.1.10'
+__version__ = '1.2.0'
 
 # ================= 配置区域 =================
 # 所有凭据从环境变量读取（优先）或 .env 文件加载（本地开发）。
@@ -501,8 +501,15 @@ def load_config():
                 _dev_empty_code_rows.append(_row_idx)
                 continue
             barrels = row.get('桶数', 1)
+            if barrels is None or (isinstance(barrels, float) and pd.isna(barrels)):
+                barrels = 1
             owner   = row.get('设备归属', '中润')
-            device_config[code] = {'barrels': barrels, 'owner': owner}
+            _is_stopped_raw = row.get('是否停机', '')
+            if _is_stopped_raw is None or (isinstance(_is_stopped_raw, float) and pd.isna(_is_stopped_raw)):
+                is_stopped = False
+            else:
+                is_stopped = str(_is_stopped_raw).strip() == '已停用'
+            device_config[code] = {'barrels': barrels, 'owner': owner, 'is_stopped': is_stopped}
             # 收集桶数/归属缺失问题（是否为补录设备须在step6后才能判断，此处仅收集）
             _barrel_empty = barrels is None or (isinstance(barrels, float) and pd.isna(barrels))
             _owner_val    = str(owner).strip() if owner is not None else ''
@@ -883,22 +890,33 @@ def process_data(df):
     now = datetime.datetime.now()
 
     def check_sync(row):
-        # 设备已停用
+        # 设备已停用（DB记录）
         if row.get('device_status') == 1:
-            return "disabled"
+            return "已停用"
         m_time = row.get('modify_time')
         # 从未上报数据（设备从未激活）
         if pd.isnull(m_time):
-            return "never_synced"
+            return "未激活"
         try:
             elapsed_h = (now - m_time).total_seconds() / 3600
             if elapsed_h > 72:
-                return "offline"        # 长期失联（>72h），需处理
-            if elapsed_h > 24:
-                return "offline_warn"   # 短期离线（24~72h），预警
+                sync_status = "离线"           # 长期失联（>72h），需处理
+            elif elapsed_h >= 18:
+                sync_status = "离线预警"       # 短期离线（≥18h 且 ≤72h），预警
+            else:
+                sync_status = "在线"
+            # 若设备离线且在配置中标记为"已停用"，则视为停用
+            if sync_status == "离线":
+                code = str(row.get('device_code', '')).strip()
+                if device_config.get(code, {}).get('is_stopped', False):
+                    return "已停用"
+            return sync_status
         except Exception:
-            return "offline"
-        return "online"
+            # 时间计算失败默认离线，同步检查 is_stopped
+            code = str(row.get('device_code', '')).strip()
+            if device_config.get(code, {}).get('is_stopped', False):
+                return "已停用"
+            return "离线"
 
     df['网络同步'] = df.apply(check_sync, axis=1)
 
@@ -990,7 +1008,7 @@ def process_data(df):
                 '库存(%)': '无数据',
                 '桶数': dev.get('桶数', 1),
                 '设备归属': dev.get('设备归属', '中润'),
-                '网络同步': 'disabled',
+                '网络同步': '待安装',
                 '安装时间': dev.get('安装时间', ''),
                 '安装地点': dev.get('安装地点', ''),
             })
@@ -1105,11 +1123,12 @@ def _generate_excel_body(df, filename, df_metered, writer):
             return '#FFCC99', '#333333'
 
     _SYNC_COLOR_MAP = {
-        'online':       ('#C6EFCE', '#006100'),
-        'offline_warn': ('#FFD966', '#7D4C00'),
-        'offline':      ('#FFC7CE', '#9C0006'),
-        'never_synced': ('#E2CFEE', '#7030A0'),
-        'disabled':     ('#D9D9D9', '#666666'),
+        '在线':     ('#C6EFCE', '#006100'),
+        '离线预警': ('#FFD966', '#7D4C00'),
+        '离线':     ('#FFC7CE', '#9C0006'),
+        '未激活':   ('#E2CFEE', '#7030A0'),
+        '已停用':   ('#D9D9D9', '#666666'),
+        '待安装':   ('#D9D9D9', '#666666'),
     }
 
     def _sync_colors(val):
@@ -1141,11 +1160,12 @@ def _generate_excel_body(df, filename, df_metered, writer):
             if col_name == '网络同步':
                 ws.write_comment(1, col_num,
                     '【网络同步状态说明】\n'
-                    'online — 24h 内正常上报（绿）\n'
-                    'offline_warn — 24~72h 未上报（橙）\n'
-                    'offline — 超过 72h 未上报（红）\n'
-                    'never_synced — 从未上报，设备未激活（紫）\n'
-                    'disabled — 已停用 / 待安装调试（灰）',
+                    '在线    — 最近上报距今 <18h，设备正常（绿）\n'
+                    '离线预警 — 最近上报距今 ≥18h 且 ≤72h，需关注（橙）\n'
+                    '离线    — 最近上报距今 >72h，需处理（红）\n'
+                    '未激活  — 从未上报数据，设备未激活（紫）\n'
+                    '已停用  — 设备已关机（灰）\n'
+                    '待安装  — 设备待安装调试，尚未录入系统（灰）',
                     {'x_scale': 2.5, 'y_scale': 3.5, 'font_size': 10}
                 )
 
