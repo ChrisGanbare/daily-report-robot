@@ -129,7 +129,7 @@ def get_db_data():
             d.customer_id,                  -- 客户ID（用于排除规则、计量客户筛选）
             c.customer_name,                -- 客户名称
             CONCAT(IFNULL(d.province_name,''), IFNULL(d.city_name,''), IFNULL(d.district_name,'')) as location, -- 安装地点
-            IF(ot.oil_name IS NOT NULL AND ot.oil_name != '' AND ot.oil_model NOT LIKE CONCAT('%', ot.oil_name, '%'), CONCAT(ot.oil_name, ot.oil_model), ot.oil_model) as oil_model,  -- 油品型号（oil_name+oil_model，含oil_name则去重）
+            IF(ot.oil_name IS NOT NULL AND ot.oil_name != '' AND ot.oil_model NOT LIKE CONCAT('%%', ot.oil_name, '%%'), CONCAT(ot.oil_name, ot.oil_model), ot.oil_model) as oil_model,  -- 油品型号（oil_name+oil_model，含oil_name则去重）
             o.avai_ratio,                   -- 当前库存百分比
             o.modify_time                   -- 最后上报时间（用于判断网络在线状态）
         FROM
