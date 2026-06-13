@@ -71,6 +71,7 @@ nssm.exe set %SERVICE% AppEnvironmentExtra ^
     "DB_USER=YOUR_DB_USER" ^
     "DB_PASSWORD=YOUR_DB_PASSWORD" ^
     "DB_NAME=YOUR_DB_NAME" ^
+    :: WEBHOOK_URL must be the FULL URL: https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...
     "WEBHOOK_URL=YOUR_WECOM_WEBHOOK_URL" ^
     "CONFIG_EXCEL_URL=YOUR_CONFIG_EXCEL_URL" ^
     "FEISHU_APP_ID=YOUR_FEISHU_APP_ID" ^

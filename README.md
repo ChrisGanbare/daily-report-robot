@@ -68,8 +68,7 @@ DB_CONFIG = {
 ### 2. 企业微信机器人 Webhook
 
 ```python
-WEBHOOK_URL = os.environ.get('WEBHOOK_URL',
-    "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=YOUR_KEY")
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '')
 ```
 
 ### 3. 在线配置文件

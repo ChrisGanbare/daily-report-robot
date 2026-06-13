@@ -33,12 +33,8 @@ DB_CONFIG = {
     'charset':  'utf8mb4'
 }
 
-# 2. 机器人 Webhook (企业微信)
-_webhook_key = os.environ.get('WEBHOOK_KEY', '')
-WEBHOOK_URL = os.environ.get(
-    'WEBHOOK_URL',
-    f"https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key={_webhook_key}"
-)
+# 2. 机器人 Webhook (企业微信) — 完整地址：https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=...
+WEBHOOK_URL = os.environ.get('WEBHOOK_URL', '')
 
 # 4. 配置文件设置
 # 方案A：在线表格配置 (填入分享链接)
